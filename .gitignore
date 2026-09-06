@@ -1,0 +1,7 @@
+node_modules/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+.env
+.vps_known_hosts
+npm-debug.log*

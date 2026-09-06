@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#222a40">
+  <title>訂單管理系統</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="brand"><span class="brand-mark">訂</span><strong>訂單管理系統</strong></header>
+    <header class="topbar">
+      <span class="scanner-status"><i></i>USB 掃碼輸入</span>
+      <span id="user-name" class="user-name"></span>
+      <button id="logout-button" class="button secondary hidden" type="button">登出</button>
+    </header>
+    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button></nav></aside>
+    <main class="content">
+      <section id="page-home" class="page active">
+        <div class="page-heading"><div><h1>首頁</h1><p>歡迎使用會員訂單管理系統</p></div><button class="button primary" data-go-work="scan" type="button">開始建立訂單</button></div>
+        <div class="entry-grid"><button class="entry-card" data-go-work="scan" type="button"><span class="entry-icon">⌗</span><b>掃描 QR Code</b><small>使用 USB 掃碼器快速帶入商品</small></button><button class="entry-card" data-go-work="manual" type="button"><span class="entry-icon">⌨</span><b>手動輸入條碼</b><small>輸入條碼並查詢商品資料</small></button><button class="entry-card" data-go-work="orders" type="button"><span class="entry-icon">☷</span><b>訂單查詢</b><small>依日期查看訂單與商品明細</small></button></div>
+        <div class="panel"><div class="panel-heading"><h2>今日最近訂單</h2><button class="button secondary" data-go-work="orders" type="button">查看全部</button></div><div class="table-scroll"><table><thead><tr><th>訂單編號</th><th>建立時間</th><th>會員</th><th>品項</th><th>狀態</th></tr></thead><tbody id="recent-orders"><tr><td colspan="5" class="empty">登入後顯示今日訂單</td></tr></tbody></table></div></div>
+      </section>
+      <section id="page-login" class="page"><div class="login-wrap"><form id="login-form" class="login-card"><span class="login-mark">訂</span><h1>會員專屬登入</h1><p>請輸入帳號與密碼進入訂單工作台</p><label>帳號<input id="login-username" autocomplete="username" value="admin" required></label><label>密碼<input id="login-password" type="password" autocomplete="current-password" value="admin12345" required></label><p id="login-error" class="message error hidden"></p><button class="button primary full" type="submit">登入</button><div class="login-foot"><span>預設測試帳號：admin</span><span>密碼：admin12345</span></div></form></div></section>
+      <section id="page-workspace" class="page">
+        <div class="page-heading"><div><h1>訂單工作台</h1><p>掃描或輸入商品條碼，並查詢每日訂單</p></div></div>
+        <div class="tabs"><button class="active" data-work="scan" type="button">掃描 QR Code</button><button data-work="manual" type="button">手動輸入條碼</button><button data-work="orders" type="button">訂單查詢</button></div>
+        <section id="work-scan" class="work-view active"><div class="panel"><div class="panel-heading"><h2>掃碼建立訂單</h2><span class="scanner-status"><i></i><span id="scan-status" role="status">點接收欄開始掃描</span></span></div><div class="scan-layout"><div class="scan-zone" id="scan-zone" tabindex="0"><div><span class="scan-glyph">⌗</span><h2>請掃描商品 QR Code</h2><p>請使用英文輸入法。掃碼後自動查詢商品；填寫數量或備註後，點「繼續掃描」接收下一筆。</p><label class="scanner-input-label">掃碼接收欄<input id="scanner-input" inputmode="none" autocomplete="off" spellcheck="false" maxlength="512" placeholder="點此後開始掃描"></label><div class="form-actions"><button id="scan-resume" class="button secondary" type="button">繼續掃描</button><button id="scan-lookup" class="button secondary" type="button">查詢條碼</button></div></div></div><form id="scan-form" class="order-form"><div id="scan-product" class="product-preview empty">尚未讀取商品</div><label>數量<input id="scan-quantity" type="number" min="1" max="9999" value="1" required></label><label>備註<textarea id="scan-note" maxlength="500" placeholder="選填"></textarea></label><p role="status" id="scan-message" class="message hidden"></p><div class="form-actions"><button id="scan-clear" class="button secondary" type="button">清除</button><button id="scan-submit" class="button primary" type="submit" disabled>加入訂單</button></div></form></div></div></section>
+        <section id="work-manual" class="work-view"><div class="panel narrow-panel"><div class="panel-heading"><h2>手動輸入商品條碼</h2></div><form id="manual-form" class="order-form"><label>商品條碼<input id="manual-barcode" autocomplete="off" placeholder="例如：4719585678958" required></label><div id="manual-product" class="product-preview empty">輸入條碼後查詢商品</div><label>數量<input id="manual-quantity" type="number" min="1" max="9999" value="1" required></label><label>備註<textarea id="manual-note" maxlength="500" placeholder="選填"></textarea></label><p id="manual-message" class="message hidden"></p><div class="form-actions"><button id="manual-lookup" class="button secondary" type="button">查詢商品</button><button class="button primary" type="submit">加入訂單</button></div></form></div></section>
+        <section id="work-orders" class="work-view"><div class="panel"><div class="panel-heading"><h2>每日訂單查詢</h2><div class="query-actions"><input id="order-date" type="date"><button id="query-orders" class="button primary" type="button">查詢</button></div></div><div class="table-scroll"><table><thead><tr><th>訂單編號</th><th>建立時間</th><th>會員</th><th>品項</th><th>數量</th><th>狀態</th></tr></thead><tbody id="order-list"><tr><td colspan="6" class="empty">尚無資料</td></tr></tbody></table></div></div></section>
+      </section>
+      <section id="page-products" class="page">
+        <div class="page-heading"><div><h1>商品管理</h1><p>新增後可立刻供掃碼與手動輸入查詢使用。</p></div></div>
+        <div class="product-manager">
+          <section class="panel product-create"><div class="panel-heading"><h2 id="product-form-title">新增商品</h2></div>
+            <form id="product-form" class="order-form"><label>商品條碼<input id="product-barcode" autocomplete="off" spellcheck="false" maxlength="512" placeholder="掃描或輸入商品 barcode／QR Code 內容" required></label><p class="input-help">開啟此頁後可直接掃描；也可按「掃描條碼」後再掃。</p><div class="form-actions compact-actions"><button id="product-scan-resume" class="button secondary" type="button">掃描條碼</button></div><label>商品名稱<input id="product-name" maxlength="120" placeholder="例如：無糖綠茶 600ml" required></label><label>規格／備註<input id="product-specification" maxlength="300" placeholder="例如：24 入／箱（選填）"></label><p id="product-message" role="status" class="message hidden"></p><div class="form-actions"><button id="product-clear" class="button secondary" type="button">清除</button><button id="product-save" class="button primary" type="submit">儲存商品</button></div></form>
+          </section>
+          <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><input id="product-search" class="product-search" autocomplete="off" placeholder="搜尋商品名稱、條碼或規格"></div><button id="products-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>規格</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div></section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/scanner.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

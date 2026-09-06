@@ -1,0 +1,10 @@
+services:
+  order-system:
+    build: .
+    container_name: order-system
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "4000:3000"
+    volumes:
+      - ./data:/app/data
