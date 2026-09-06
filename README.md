@@ -34,7 +34,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-目前 VPS 外部測試端點為 `http://187.52.114.118:4000`。正式環境仍建議為 OrderFlow 使用獨立網域並透過 Nginx HTTPS 轉送。USB 掃碼器接在使用者的電腦即可：它以鍵盤方式將條碼輸入已開啟的瀏覽器，不需要接到 VPS。
+目前 VPS 外部測試端點為 `http://187.52.114.118/orderflow/`，使用標準 HTTP port 80；`http://187.52.114.118:4000` 亦可作為備援。正式環境仍建議為 OrderFlow 使用獨立網域並透過 Nginx HTTPS 轉送。USB 掃碼器接在使用者的電腦即可：它以鍵盤方式將條碼輸入已開啟的瀏覽器，不需要接到 VPS。
 
 ## 測試登入資料
 
