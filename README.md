@@ -6,16 +6,17 @@
 - USB HID 掃碼器／QR Code 掃描輸入
 - 手動輸入商品條碼
 - 建立訂單與每日訂單查詢
-- Node.js API 與 SQLite 資料庫
+- Node.js API 與 PostgreSQL 資料庫
 - 響應式桌機／平板／手機畫面
 
 ## Windows 安裝
 
-1. 安裝 Node.js 20 或更新的 LTS 版本：https://nodejs.org/
+1. 安裝 Docker Desktop：https://www.docker.com/products/docker-desktop/
 2. 解壓縮或複製本資料夾到 Windows。
-3. 雙擊 `install.bat`（或中文版 `安裝套件.bat`）。
-4. 雙擊 `start.bat`（或中文版 `啟動系統.bat`）。
-5. Chrome 開啟 `http://localhost:3000`。
+3. 雙擊 `docker-start.bat`。
+4. Chrome 開啟 `http://localhost:4000`。
+
+若要不使用 Docker 開發，請先自行安裝 PostgreSQL、設定 `DATABASE_URL`，再執行 `install.bat` 與 `start.bat`。
 
 也可以使用 PowerShell：
 
@@ -26,7 +27,7 @@ npm run dev
 
 ## Docker / VPS 部署
 
-Docker 對外使用 port `4000`，容器內仍使用 port `3000`。先由 `.env.example` 建立 `.env`，並設定高強度 `ADMIN_PASSWORD`；第一次啟動時才會建立管理員帳號。既有資料庫放在 `data/`，Docker Compose 會將它持久化掛載到容器內。
+Docker 對外使用 port `4000`，容器內仍使用 port `3000`。Compose 會同時啟動 Web 系統與 PostgreSQL，資料保存在 Docker volume `postgres_data`。測試完成、正式上線前，請修改 `.env` 裡的管理員及資料庫密碼。
 
 ```bash
 cp .env.example .env
@@ -38,7 +39,7 @@ docker compose up -d --build
 ## 測試登入資料
 
 - 帳號：`admin`
-- 密碼：`admin12345`
+- 密碼：`test123`
 
 正式使用前，請修改預設密碼與 `server.js` 中的初始化帳號流程。
 
@@ -73,17 +74,13 @@ docker compose up -d --build
 
 ## 資料位置
 
-SQLite 資料庫會自動建立於：
-
-```text
-data/orders.db
-```
+PostgreSQL 資料保存在 Docker volume `postgres_data`。可使用 `docker compose exec postgres pg_dump` 建立備份。
 
 ## 商品管理
 
-以系統管理員帳號登入後，左側會顯示「商品管理」。開啟頁面後，USB 掃碼器可直接將條碼帶入「商品條碼」欄；掃描後填寫名稱和選填規格並儲存，該條碼立即可供 USB 掃碼器與「手動輸入條碼」查詢、建立訂單使用。商品資料與訂單資料都保存在同一個 `data/orders.db`。
+以系統管理員帳號登入後，左側會顯示「商品管理」。開啟頁面後，USB 掃碼器可直接將條碼帶入「商品條碼」欄；掃描後填寫名稱和選填規格並儲存，該條碼立即可供 USB 掃碼器與「手動輸入條碼」查詢、建立訂單使用。
 
-備份時請停止系統，再複製整個 `data` 資料夾。正式多人使用時建議定期自動備份，規模增大後可換成 PostgreSQL。
+正式多人使用時建議以 `pg_dump` 定期自動備份 PostgreSQL，並定期演練還原。
 
 ## 專案結構
 
@@ -93,7 +90,7 @@ order-system-windows/
 │  ├─ index.html       # 網頁結構
 │  ├─ styles.css       # 畫面樣式
 │  └─ app.js           # 前端功能與掃碼處理
-├─ data/               # SQLite 資料庫位置
+├─ compose.yaml        # Web 與 PostgreSQL 容器
 ├─ server.js           # API、登入、資料庫結構
 ├─ package.json
 ├─ 安裝套件.bat
