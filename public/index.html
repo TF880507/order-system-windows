@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#222a40">
   <title>訂單管理系統</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <div class="app-shell">
@@ -22,7 +22,7 @@
         <div class="entry-grid"><button class="entry-card" data-go-work="scan" type="button"><span class="entry-icon">⌗</span><b>掃描 QR Code</b><small>使用 USB 掃碼器快速帶入商品</small></button><button class="entry-card" data-go-work="manual" type="button"><span class="entry-icon">⌨</span><b>手動輸入條碼</b><small>輸入條碼並查詢商品資料</small></button><button class="entry-card" data-go-work="orders" type="button"><span class="entry-icon">☷</span><b>訂單查詢</b><small>依日期查看訂單與商品明細</small></button></div>
         <div class="panel"><div class="panel-heading"><h2>今日最近訂單</h2><button class="button secondary" data-go-work="orders" type="button">查看全部</button></div><div class="table-scroll"><table><thead><tr><th>訂單編號</th><th>建立時間</th><th>會員</th><th>品項</th><th>狀態</th></tr></thead><tbody id="recent-orders"><tr><td colspan="5" class="empty">登入後顯示今日訂單</td></tr></tbody></table></div></div>
       </section>
-      <section id="page-login" class="page"><div class="login-wrap"><form id="login-form" class="login-card"><span class="login-mark">訂</span><h1>會員專屬登入</h1><p>請輸入帳號與密碼進入訂單工作台</p><label>帳號<input id="login-username" autocomplete="username" value="admin" required></label><label>密碼<input id="login-password" type="password" autocomplete="current-password" value="admin12345" required></label><p id="login-error" class="message error hidden"></p><button class="button primary full" type="submit">登入</button><div class="login-foot"><span>預設測試帳號：admin</span><span>密碼：admin12345</span></div></form></div></section>
+      <section id="page-login" class="page"><div class="login-wrap"><form id="login-form" class="login-card"><span class="login-mark">訂</span><h1>會員專屬登入</h1><p>請輸入帳號與密碼進入訂單工作台</p><label>帳號<input id="login-username" autocomplete="username" value="admin" required></label><label>密碼<input id="login-password" type="password" autocomplete="current-password" value="test123" required></label><p id="login-error" class="message error hidden"></p><button class="button primary full" type="submit">登入</button><div class="login-foot"><span>預設測試帳號：admin</span><span>密碼：test123</span></div></form></div></section>
       <section id="page-workspace" class="page">
         <div class="page-heading"><div><h1>訂單工作台</h1><p>掃描或輸入商品條碼，並查詢每日訂單</p></div></div>
         <div class="tabs"><button class="active" data-work="scan" type="button">掃描 QR Code</button><button data-work="manual" type="button">手動輸入條碼</button><button data-work="orders" type="button">訂單查詢</button></div>
@@ -42,7 +42,7 @@
     </main>
   </div>
   <div id="toast" class="toast hidden" role="status"></div>
-  <script src="/scanner.js" defer></script>
-  <script src="/app.js" defer></script>
+  <script src="./scanner.js" defer></script>
+  <script src="./app.js" defer></script>
 </body>
 </html>

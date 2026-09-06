@@ -34,7 +34,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-部署後開啟 `http://伺服器IP:4000`。USB 掃碼器接在使用者的電腦即可：它以鍵盤方式將條碼輸入已開啟的瀏覽器，不需要接到 VPS。
+正式端點為 `https://glory.com.tw/orderflow/`。應用程式的 port `4000` 僅綁定 VPS 本機，由 Nginx 經 HTTPS 轉送，不直接暴露在網際網路。USB 掃碼器接在使用者的電腦即可：它以鍵盤方式將條碼輸入已開啟的瀏覽器，不需要接到 VPS。
 
 ## 測試登入資料
 

@@ -1,9 +1,12 @@
 const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const appBase = window.location.pathname.endsWith('/')
+  ? window.location.pathname.replace(/\/$/, '')
+  : window.location.pathname.slice(0, window.location.pathname.lastIndexOf('/'));
 
 async function api(url, options = {}) {
-  const response = await fetch(url, { credentials:'same-origin', headers:{ 'Content-Type':'application/json', ...(options.headers || {}) }, ...options });
+  const response = await fetch(`${appBase}${url}`, { credentials:'same-origin', headers:{ 'Content-Type':'application/json', ...(options.headers || {}) }, ...options });
   const data = response.status === 204 ? null : await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || '系統發生錯誤');
   return data;
