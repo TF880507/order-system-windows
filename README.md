@@ -6,6 +6,7 @@
 - USB HID 掃碼器／QR Code 掃描輸入
 - 手動輸入商品條碼
 - 建立訂單與每日訂單查詢
+- 每日結單排程、手動 CSV 匯出與執行紀錄
 - Node.js API 與 PostgreSQL 資料庫
 - 響應式桌機／平板／手機畫面
 
@@ -82,6 +83,15 @@ PostgreSQL 資料保存在 Docker volume `postgres_data`。可使用 `docker com
 
 正式多人使用時建議以 `pg_dump` 定期自動備份 PostgreSQL，並定期演練還原。
 
+## 排程與匯出
+
+系統管理員登入後可進入「排程與匯出」。預設依 `Asia/Taipei` 時區每日 `00:00` 自動結清前一營業日，並保存 Excel 可開啟的 UTF-8 CSV。服務若在執行時間短暫離線，重新啟動後會補做尚未完成的歷史結單；PostgreSQL advisory lock 可避免多個 Web 程序重複執行。
+
+- 手動匯出：建立所選日期的即時快照，不鎖定訂單。
+- 立即結單：產生匯出檔並永久鎖定所選日期；請確認後再使用。
+- 歷史訂單：跨日後顯示「已鎖定」，只能查詢。
+- 匯出檔：含營業日、訂單編號、建立時間、會員、商品、數量、備註與狀態。
+
 ## 專案結構
 
 ```text
@@ -91,6 +101,7 @@ order-system-windows/
 │  ├─ styles.css       # 畫面樣式
 │  └─ app.js           # 前端功能與掃碼處理
 ├─ compose.yaml        # Web 與 PostgreSQL 容器
+├─ schedule.js         # 台北營業日與 CSV 工具
 ├─ server.js           # API、登入、資料庫結構
 ├─ package.json
 ├─ 安裝套件.bat

@@ -20,6 +20,7 @@ function showPage(name) {
   if (name === 'home') loadOrders('#recent-orders', 5);
   if (name === 'workspace') setTimeout(() => scanner.focus(), 0);
   if (name === 'products') { loadProducts(); setTimeout(() => productScanner.focus(), 0); }
+  if (name === 'schedule') loadSchedule();
 }
 
 function showWork(name) {
@@ -93,7 +94,7 @@ async function loadOrders(targetSelector, limit = 0) {
   try {
     const orders = await api(`/api/orders?date=${encodeURIComponent($('#order-date').value)}`);
     const rows = limit ? orders.slice(0, limit) : orders;
-    target.innerHTML = rows.length ? rows.map((order) => `<tr><td><b>#${escapeHtml(order.orderNumber)}</b></td><td>${escapeHtml(formatDateTime(order.createdAt))}</td><td>${escapeHtml(order.memberName)}</td><td>${order.itemCount} 項</td>${targetSelector === '#order-list' ? `<td>${order.totalQuantity}</td>` : ''}<td><span class="status-tag">已建立</span></td></tr>`).join('') : `<tr><td colspan="${columns}" class="empty">此日期尚無訂單</td></tr>`;
+    target.innerHTML = rows.length ? rows.map((order) => `<tr><td><b>#${escapeHtml(order.orderNumber)}</b></td><td>${escapeHtml(formatDateTime(order.createdAt))}</td><td>${escapeHtml(order.memberName)}</td><td>${order.itemCount} 項</td>${targetSelector === '#order-list' ? `<td>${order.totalQuantity}</td>` : ''}<td><span class="status-tag ${order.editable ? '' : 'disabled-tag'}">${order.editable ? '當日可編輯' : '已鎖定'}</span></td></tr>`).join('') : `<tr><td colspan="${columns}" class="empty">此日期尚無訂單</td></tr>`;
   } catch (error) { target.innerHTML = `<tr><td colspan="${columns}" class="empty">${escapeHtml(error.message)}</td></tr>`; }
 }
 
@@ -106,6 +107,21 @@ async function loadProducts() {
     state.products = products;
     target.innerHTML = products.length ? products.map((product) => `<tr><td><b>${escapeHtml(product.name)}</b></td><td>${escapeHtml(product.barcode)}</td><td>${escapeHtml(product.specification || '—')}</td><td class="row-actions"><button class="text-button" data-edit-product="${product.id}" type="button">編輯</button><button class="text-button danger" data-delete-product="${product.id}" type="button">刪除</button></td></tr>`).join('') : '<tr><td colspan="4" class="empty">查無符合的商品</td></tr>';
   } catch (error) { target.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(error.message)}</td></tr>`; }
+}
+
+async function loadSchedule() {
+  if (!state.user || state.user.role !== 'admin') return;
+  const target = $('#schedule-list');
+  target.innerHTML = '<tr><td colspan="7" class="empty">載入中</td></tr>';
+  try {
+    const data = await api('/api/schedule');
+    $('#schedule-enabled').checked = data.setting.enabled;
+    $('#schedule-time').value = data.setting.closeTime;
+    $('#export-date').value ||= data.today;
+    $('#schedule-state').textContent = data.setting.enabled ? `每日 ${data.setting.closeTime} 啟用中` : '排程已停用';
+    $('#schedule-state').classList.toggle('disabled-tag', !data.setting.enabled);
+    target.innerHTML = data.exports.length ? data.exports.map((item) => `<tr><td><b>${escapeHtml(item.businessDate)}</b></td><td>${item.exportType === 'automatic' ? '自動排程' : '手動匯出'}</td><td>${escapeHtml(formatDateTime(item.exportedAt))}</td><td>${item.orderCount}</td><td>${item.itemCount} 項／${item.totalQuantity} 件</td><td><span class="status-tag">${item.closed ? '已結單' : '快照'}</span></td><td><a class="text-button download-link" href="${appBase}/api/exports/${item.id}/download">下載 CSV</a></td></tr>`).join('') : '<tr><td colspan="7" class="empty">尚無匯出紀錄</td></tr>';
+  } catch (error) { target.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`; }
 }
 
 function clearProductForm() {
@@ -137,6 +153,7 @@ $('#login-form').addEventListener('submit', async (event) => {
     $('#user-name').textContent = state.user.displayName;
     $('#logout-button').classList.remove('hidden');
     $('#products-nav').classList.toggle('hidden', state.user.role !== 'admin');
+    $('#schedule-nav').classList.toggle('hidden', state.user.role !== 'admin');
     showWork('scan');
   } catch (error) { showMessage('#login-error', error.message); }
 });
@@ -146,6 +163,7 @@ $('#logout-button').addEventListener('click', async () => {
   clearOrderForm('scan'); clearOrderForm('manual');
   state.user = null; $('#user-name').textContent = ''; $('#logout-button').classList.add('hidden'); showPage('login');
   $('#products-nav').classList.add('hidden');
+  $('#schedule-nav').classList.add('hidden');
 });
 
 let scanSaving = false;
@@ -250,9 +268,37 @@ $('#product-list').addEventListener('click', async (event) => {
     loadProducts();
   } catch (error) { showMessage('#product-message', error.message); }
 });
+$('#schedule-form').addEventListener('submit', async (event) => {
+  event.preventDefault(); clearMessage('#schedule-message');
+  try {
+    await api('/api/schedule', { method:'PUT', body:JSON.stringify({ enabled:$('#schedule-enabled').checked, closeTime:$('#schedule-time').value }) });
+    showMessage('#schedule-message', '排程設定已儲存', 'success');
+    loadSchedule();
+  } catch (error) { showMessage('#schedule-message', error.message); }
+});
+$('#manual-export').addEventListener('click', async () => {
+  clearMessage('#export-message');
+  try {
+    const exported = await api('/api/schedule/export', { method:'POST', body:JSON.stringify({ businessDate:$('#export-date').value }) });
+    showMessage('#export-message', 'CSV 已建立並開始下載', 'success');
+    window.location.assign(`${appBase}/api/exports/${exported.id}/download`);
+    loadSchedule();
+  } catch (error) { showMessage('#export-message', error.message); }
+});
+$('#manual-close').addEventListener('click', async () => {
+  const date = $('#export-date').value;
+  if (!date || !window.confirm(`確定要結清 ${date} 的訂單嗎？\n結單後該日期不可再新增或修改訂單。`)) return;
+  clearMessage('#export-message');
+  try {
+    await api('/api/schedule/close', { method:'POST', body:JSON.stringify({ businessDate:date }) });
+    showMessage('#export-message', `${date} 已結單`, 'success');
+    loadSchedule();
+  } catch (error) { showMessage('#export-message', error.message); }
+});
+$('#schedule-refresh').addEventListener('click', loadSchedule);
 $$('[data-page]').forEach((button) => button.addEventListener('click', () => button.dataset.page === 'workspace' && !state.user ? showPage('login') : showPage(button.dataset.page)));
 $$('[data-go-work]').forEach((button) => button.addEventListener('click', () => state.user ? showWork(button.dataset.goWork) : showPage('login')));
 $$('[data-work]').forEach((button) => button.addEventListener('click', () => showWork(button.dataset.work)));
 
 $('#order-date').value = new Date().toLocaleDateString('en-CA');
-api('/api/me').then((user) => { state.user = user; $('#user-name').textContent = user.display_name || user.displayName; $('#logout-button').classList.remove('hidden'); $('#products-nav').classList.toggle('hidden', user.role !== 'admin'); loadOrders('#recent-orders', 5); }).catch(() => {});
+api('/api/me').then((user) => { state.user = user; $('#user-name').textContent = user.display_name || user.displayName; $('#logout-button').classList.remove('hidden'); $('#products-nav').classList.toggle('hidden', user.role !== 'admin'); $('#schedule-nav').classList.toggle('hidden', user.role !== 'admin'); loadOrders('#recent-orders', 5); }).catch(() => {});

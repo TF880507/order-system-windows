@@ -3,6 +3,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
+const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, buildOrdersCsv } = require('./schedule');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -60,7 +61,45 @@ async function initializeDatabase() {
       expires_at TIMESTAMPTZ NOT NULL
     );
 
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS business_date DATE;
+    UPDATE orders SET business_date=(created_at AT TIME ZONE 'Asia/Taipei')::date WHERE business_date IS NULL;
+    ALTER TABLE orders ALTER COLUMN business_date SET NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS schedule_settings (
+      id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      close_time TEXT NOT NULL DEFAULT '00:00',
+      timezone TEXT NOT NULL DEFAULT 'Asia/Taipei',
+      last_closed_date DATE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by BIGINT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS order_exports (
+      id BIGSERIAL PRIMARY KEY,
+      business_date DATE NOT NULL,
+      export_type TEXT NOT NULL CHECK (export_type IN ('automatic', 'manual')),
+      exported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      exported_by BIGINT REFERENCES users(id),
+      order_count INTEGER NOT NULL,
+      item_count INTEGER NOT NULL,
+      total_quantity INTEGER NOT NULL,
+      csv_content TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_closings (
+      business_date DATE PRIMARY KEY,
+      closed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      trigger_type TEXT NOT NULL CHECK (trigger_type IN ('automatic', 'manual')),
+      closed_by BIGINT REFERENCES users(id),
+      export_id BIGINT NOT NULL REFERENCES order_exports(id)
+    );
+
+    INSERT INTO schedule_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
     CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_orders_business_date ON orders(business_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_order_exports_business_date ON order_exports(business_date DESC, exported_at DESC);
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
   `);
@@ -111,7 +150,7 @@ async function requireAuth(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: '僅系統管理員可管理商品' });
+  if (req.user.role !== 'admin') return res.status(403).json({ error: '僅系統管理員可使用此功能' });
   next();
 }
 
@@ -198,11 +237,14 @@ async function createOrder(userId, items) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const datePrefix = (await client.query("SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei', 'YYYYMMDD') AS value")).rows[0].value;
+    const businessDate = (await client.query("SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD') AS value")).rows[0].value;
+    const datePrefix = businessDate.replaceAll('-', '');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [datePrefix]);
+    const closed = await client.query('SELECT 1 FROM daily_closings WHERE business_date=$1::date', [businessDate]);
+    if (closed.rowCount) throw new Error('今日訂單已結單，無法再新增');
     const count = Number((await client.query('SELECT COUNT(*) AS count FROM orders WHERE order_number LIKE $1', [`${datePrefix}-%`])).rows[0].count) + 1;
     const orderNumber = `${datePrefix}-${String(count).padStart(4, '0')}`;
-    const order = (await client.query('INSERT INTO orders (order_number, user_id) VALUES ($1, $2) RETURNING id', [orderNumber, userId])).rows[0];
+    const order = (await client.query('INSERT INTO orders (order_number, user_id, business_date) VALUES ($1, $2, $3) RETURNING id', [orderNumber, userId, businessDate])).rows[0];
 
     for (const item of items) {
       const product = (await client.query('SELECT * FROM products WHERE barcode=$1 AND active=TRUE', [String(item.barcode)])).rows[0];
@@ -228,10 +270,12 @@ app.get('/api/orders', requireAuth, async (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Taipei' });
   const { rows } = await pool.query(`
     SELECT orders.id, orders.order_number AS "orderNumber", orders.status, orders.created_at AS "createdAt",
+           orders.business_date::text AS "businessDate",
+           (orders.business_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date AND orders.status<>'closed') AS editable,
            users.display_name AS "memberName", COUNT(order_items.id)::integer AS "itemCount",
            COALESCE(SUM(order_items.quantity),0)::integer AS "totalQuantity"
     FROM orders JOIN users ON users.id=orders.user_id LEFT JOIN order_items ON order_items.order_id=orders.id
-    WHERE (orders.created_at AT TIME ZONE 'Asia/Taipei')::date=$1::date
+    WHERE orders.business_date=$1::date
     GROUP BY orders.id, users.display_name ORDER BY orders.id DESC
   `, [date]);
   res.json(rows);
@@ -245,6 +289,121 @@ app.get('/api/orders/:id', requireAuth, async (req, res) => {
   res.json(order);
 });
 
+async function exportRows(client, businessDate) {
+  return (await client.query(`
+    SELECT orders.business_date::text AS "businessDate", orders.order_number AS "orderNumber",
+      to_char(orders.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+      users.display_name AS "memberName", order_items.barcode_snapshot AS barcode,
+      order_items.product_name_snapshot AS "productName", order_items.specification_snapshot AS specification,
+      order_items.quantity, order_items.note, orders.status
+    FROM orders JOIN users ON users.id=orders.user_id
+    JOIN order_items ON order_items.order_id=orders.id
+    WHERE orders.business_date=$1::date ORDER BY orders.id, order_items.id
+  `, [businessDate])).rows;
+}
+
+async function createExport(client, businessDate, exportType, userId = null) {
+  const rows = await exportRows(client, businessDate);
+  const totals = (await client.query(`
+    SELECT COUNT(DISTINCT orders.id)::integer AS "orderCount", COUNT(order_items.id)::integer AS "itemCount",
+      COALESCE(SUM(order_items.quantity),0)::integer AS "totalQuantity"
+    FROM orders LEFT JOIN order_items ON order_items.order_id=orders.id WHERE orders.business_date=$1::date
+  `, [businessDate])).rows[0];
+  const result = await client.query(`
+    INSERT INTO order_exports (business_date, export_type, exported_by, order_count, item_count, total_quantity, csv_content)
+    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    RETURNING id, business_date::text AS "businessDate", export_type AS "exportType", exported_at AS "exportedAt",
+      order_count AS "orderCount", item_count AS "itemCount", total_quantity AS "totalQuantity"
+  `, [businessDate, exportType, userId, totals.orderCount, totals.itemCount, totals.totalQuantity, buildOrdersCsv(rows)]);
+  return result.rows[0];
+}
+
+async function closeBusinessDate(businessDate, triggerType = 'automatic', userId = null) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`order-close:${businessDate}`]);
+    const existing = (await client.query(`
+      SELECT daily_closings.business_date::text AS "businessDate", daily_closings.closed_at AS "closedAt",
+        daily_closings.trigger_type AS "triggerType", order_exports.id AS "exportId",
+        order_exports.order_count AS "orderCount", order_exports.item_count AS "itemCount",
+        order_exports.total_quantity AS "totalQuantity"
+      FROM daily_closings JOIN order_exports ON order_exports.id=daily_closings.export_id
+      WHERE daily_closings.business_date=$1::date
+    `, [businessDate])).rows[0];
+    if (existing) { await client.query('COMMIT'); return existing; }
+    await client.query("UPDATE orders SET status='closed' WHERE business_date=$1::date", [businessDate]);
+    const exported = await createExport(client, businessDate, triggerType, userId);
+    const closing = (await client.query(`
+      INSERT INTO daily_closings (business_date, trigger_type, closed_by, export_id) VALUES ($1,$2,$3,$4)
+      RETURNING business_date::text AS "businessDate", closed_at AS "closedAt", trigger_type AS "triggerType"
+    `, [businessDate, triggerType, userId, exported.id])).rows[0];
+    await client.query(`UPDATE schedule_settings SET last_closed_date=GREATEST(COALESCE(last_closed_date,$1::date),$1::date) WHERE id=1`, [businessDate]);
+    await client.query('COMMIT');
+    return { ...closing, exportId:exported.id, orderCount:exported.orderCount, itemCount:exported.itemCount, totalQuantity:exported.totalQuantity };
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function runSchedule() {
+  const setting = (await pool.query('SELECT enabled, close_time AS "closeTime" FROM schedule_settings WHERE id=1')).rows[0];
+  if (!setting?.enabled) return;
+  const now = getBusinessClock();
+  if (now.time < setting.closeTime) return;
+  const targetDate = shiftDate(now.date, -1);
+  const dates = (await pool.query(`
+    SELECT business_date::text AS date FROM orders
+    WHERE business_date < $1::date AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE daily_closings.business_date=orders.business_date)
+    GROUP BY business_date ORDER BY business_date
+  `, [now.date])).rows.map((row) => row.date);
+  if (!dates.includes(targetDate)) dates.push(targetDate);
+  for (const date of dates.sort()) await closeBusinessDate(date);
+}
+
+app.get('/api/schedule', requireAuth, requireAdmin, async (_req, res) => {
+  const setting = (await pool.query(`SELECT enabled, close_time AS "closeTime", timezone, last_closed_date::text AS "lastClosedDate", updated_at AS "updatedAt" FROM schedule_settings WHERE id=1`)).rows[0];
+  const { rows } = await pool.query(`
+    SELECT order_exports.id, order_exports.business_date::text AS "businessDate", order_exports.export_type AS "exportType",
+      order_exports.exported_at AS "exportedAt", order_exports.order_count AS "orderCount",
+      order_exports.item_count AS "itemCount", order_exports.total_quantity AS "totalQuantity",
+      (daily_closings.business_date IS NOT NULL) AS "closed"
+    FROM order_exports LEFT JOIN daily_closings ON daily_closings.export_id=order_exports.id
+    ORDER BY order_exports.id DESC LIMIT 30
+  `);
+  res.json({ setting, exports:rows, today:getBusinessClock().date });
+});
+
+app.put('/api/schedule', requireAuth, requireAdmin, async (req, res) => {
+  const enabled = Boolean(req.body.enabled);
+  const closeTime = String(req.body.closeTime || '');
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(closeTime)) return res.status(400).json({ error:'排程時間格式不正確' });
+  const { rows } = await pool.query(`UPDATE schedule_settings SET enabled=$1, close_time=$2, timezone=$3, updated_at=NOW(), updated_by=$4 WHERE id=1 RETURNING enabled, close_time AS "closeTime", timezone, updated_at AS "updatedAt"`, [enabled, closeTime, BUSINESS_TIME_ZONE, req.user.id]);
+  res.json(rows[0]);
+});
+
+app.post('/api/schedule/export', requireAuth, requireAdmin, async (req, res) => {
+  const businessDate = String(req.body.businessDate || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) return res.status(400).json({ error:'請選擇匯出日期' });
+  const client = await pool.connect();
+  try { res.status(201).json(await createExport(client, businessDate, 'manual', req.user.id)); }
+  finally { client.release(); }
+});
+
+app.post('/api/schedule/close', requireAuth, requireAdmin, async (req, res) => {
+  const businessDate = String(req.body.businessDate || '');
+  const today = getBusinessClock().date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate) || businessDate > today) return res.status(400).json({ error:'結單日期不正確' });
+  res.status(201).json(await closeBusinessDate(businessDate, 'manual', req.user.id));
+});
+
+app.get('/api/exports/:id/download', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await pool.query('SELECT business_date::text AS "businessDate", csv_content AS content FROM order_exports WHERE id=$1', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error:'查無匯出紀錄' });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="orders-${rows[0].businessDate}.csv"`);
+  res.send(rows[0].content);
+});
+
 app.get('/api/health', async (_req, res) => {
   await pool.query('SELECT 1');
   res.json({ ok:true, database:'postgresql' });
@@ -255,7 +414,11 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error:'伺服器發生錯誤' });
 });
 
-initializeDatabase().then(() => app.listen(port, '0.0.0.0', () => console.log(`訂單系統已啟動：http://localhost:${port}`))).catch((error) => {
+initializeDatabase().then(() => {
+  app.listen(port, '0.0.0.0', () => console.log(`訂單系統已啟動：http://localhost:${port}`));
+  runSchedule().catch((error) => console.error('排程初始檢查失敗', error));
+  setInterval(() => runSchedule().catch((error) => console.error('排程執行失敗', error)), 30000).unref();
+}).catch((error) => {
   console.error('資料庫初始化失敗', error);
   process.exit(1);
 });

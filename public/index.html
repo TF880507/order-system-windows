@@ -15,7 +15,7 @@
       <span id="user-name" class="user-name"></span>
       <button id="logout-button" class="button secondary hidden" type="button">登出</button>
     </header>
-    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button></nav></aside>
+    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button><button id="schedule-nav" class="hidden" data-page="schedule" type="button"><span>◷</span>排程與匯出</button></nav></aside>
     <main class="content">
       <section id="page-home" class="page active">
         <div class="page-heading"><div><h1>首頁</h1><p>歡迎使用會員訂單管理系統</p></div><button class="button primary" data-go-work="scan" type="button">開始建立訂單</button></div>
@@ -38,6 +38,28 @@
           </section>
           <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><input id="product-search" class="product-search" autocomplete="off" placeholder="搜尋商品名稱、條碼或規格"></div><button id="products-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>規格</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div></section>
         </div>
+      </section>
+      <section id="page-schedule" class="page">
+        <div class="page-heading"><div><h1>排程與匯出</h1><p>每日自動結單、手動匯出與歷史執行紀錄</p></div><span id="schedule-state" class="status-tag">載入中</span></div>
+        <div class="schedule-grid">
+          <section class="panel"><div class="panel-heading"><h2>每日自動結單</h2></div>
+            <form id="schedule-form" class="order-form">
+              <label class="toggle-row"><span><b>啟用自動排程</b><small>到達設定時間後，自動結清並鎖定前一營業日訂單。</small></span><input id="schedule-enabled" type="checkbox" checked></label>
+              <label>每日執行時間<input id="schedule-time" type="time" value="00:00" required></label>
+              <label>系統時區<input value="Asia/Taipei（台北）" disabled></label>
+              <p id="schedule-message" class="message hidden"></p>
+              <div class="form-actions"><button class="button primary" type="submit">儲存排程</button></div>
+            </form>
+          </section>
+          <section class="panel"><div class="panel-heading"><h2>手動操作</h2></div>
+            <div class="order-form"><label>營業日期<input id="export-date" type="date"></label>
+              <p class="input-help">「匯出 CSV」只建立當下快照，不會鎖定當日訂單；「立即結單」會永久鎖定該日期。</p>
+              <p id="export-message" class="message hidden"></p>
+              <div class="form-actions schedule-actions"><button id="manual-export" class="button secondary" type="button">匯出 CSV</button><button id="manual-close" class="button danger-button" type="button">立即結單</button></div>
+            </div>
+          </section>
+        </div>
+        <section class="panel schedule-history"><div class="panel-heading"><h2>最近匯出與結單紀錄</h2><button id="schedule-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>營業日期</th><th>類型</th><th>執行時間</th><th>訂單</th><th>品項／數量</th><th>狀態</th><th>檔案</th></tr></thead><tbody id="schedule-list"><tr><td colspan="7" class="empty">載入中</td></tr></tbody></table></div></section>
       </section>
     </main>
   </div>
