@@ -2,6 +2,7 @@
 
 const path = require('path');
 const bcrypt = require('bcryptjs');
+const { migrateLegacyPasswords } = require('./legacy-passwords');
 const { Pool } = require('pg');
 const { parseLegacyDump } = require('./legacy-dump-parser');
 
@@ -109,8 +110,16 @@ async function transform(pool, dumpPath, memberPasswordHash, counts) {
       ON CONFLICT (username) DO UPDATE SET
         display_name=EXCLUDED.display_name, active=EXCLUDED.active, legacy_customer_id=EXCLUDED.legacy_customer_id,
         customer_code=EXCLUDED.customer_code, phone=EXCLUDED.phone, tax_id=EXCLUDED.tax_id,
-        legacy_password=EXCLUDED.legacy_password
+        legacy_password=EXCLUDED.legacy_password, password_hash=EXCLUDED.password_hash,
+        password_reset_required=TRUE
     `, [memberPasswordHash]);
+
+    const legacyPasswordResult = await migrateLegacyPasswords(client, (await client.query(`
+      SELECT account AS username, password
+      FROM legacy_stage_customers
+      WHERE NULLIF(account,'') IS NOT NULL
+      ORDER BY id::bigint
+    `)).rows);
 
     await client.query(`
       INSERT INTO users (username, password_hash, display_name, role, active, legacy_customer_id, password_reset_required)
@@ -218,6 +227,7 @@ async function transform(pool, dumpPath, memberPasswordHash, counts) {
       (SELECT COUNT(*)::integer FROM products WHERE barcode LIKE 'LEGACY-MISSING-%') AS placeholder_products,
       (SELECT COUNT(*)::integer FROM users WHERE username LIKE 'legacy-user-%') AS placeholder_customers
     `)).rows[0];
+    statistics.passwords = legacyPasswordResult;
     await client.query('INSERT INTO legacy_import_runs (source_file, statistics) VALUES ($1,$2::jsonb)', [dumpPath, JSON.stringify({ staged:counts, imported:statistics })]);
     await client.query('COMMIT');
     return statistics;
