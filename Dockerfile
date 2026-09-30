@@ -7,6 +7,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY server.js ./
 COPY schedule.js ./
+COPY order-range.js ./
 COPY scripts ./scripts
 COPY public ./public
 
