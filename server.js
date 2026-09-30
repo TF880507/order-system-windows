@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
 const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, buildOrdersCsv } = require('./schedule');
+const { validateOrderDateRange } = require('./order-range');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -182,6 +183,18 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function orderScope(req, values, alias = 'orders') {
+  if (req.user.role === 'admin') return 'TRUE';
+  values.push(req.user.id);
+  return `${alias}.user_id=$${values.length}`;
+}
+
+function parsePagination(req, defaultPageSize = 50) {
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(50, Math.max(1, Number.parseInt(req.query.pageSize, 10) || defaultPageSize));
+  return { page, pageSize, offset:(page - 1) * pageSize };
+}
+
 app.post('/api/login', async (req, res) => {
   const username = String(req.body.username || '').trim();
   const password = String(req.body.password || '');
@@ -299,27 +312,142 @@ app.post('/api/orders', requireAuth, async (req, res) => {
   catch (error) { res.status(400).json({ error:error.message }); }
 });
 
-app.get('/api/orders', requireAuth, async (req, res) => {
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Taipei' });
+async function listOrders(req, res, range = null) {
+  const { page, pageSize, offset } = parsePagination(req);
+  const values = [];
+  const conditions = [orderScope(req, values)];
+  if (range) {
+    values.push(range.startDate, range.endDate);
+    conditions.push(`orders.business_date >= $${values.length - 1}::date`);
+    conditions.push(`orders.business_date < ($${values.length}::date + INTERVAL '1 day')`);
+  } else {
+    conditions.push(`orders.business_date >= date_trunc('month', NOW())::date`);
+    conditions.push(`orders.business_date < (date_trunc('month', NOW()) + INTERVAL '1 month')::date`);
+  }
+  const where = `WHERE ${conditions.join(' AND ')}`;
+  const total = Number((await pool.query(`SELECT COUNT(*) AS count FROM orders ${where}`, values)).rows[0].count);
+  const listValues = [...values, pageSize, offset];
   const { rows } = await pool.query(`
     SELECT orders.id, orders.order_number AS "orderNumber", orders.status, orders.created_at AS "createdAt",
-           orders.business_date::text AS "businessDate",
-           (orders.business_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date AND orders.status<>'closed') AS editable,
-           users.display_name AS "memberName", COUNT(order_items.id)::integer AS "itemCount",
-           COALESCE(SUM(order_items.quantity),0)::integer AS "totalQuantity"
-    FROM orders JOIN users ON users.id=orders.user_id LEFT JOIN order_items ON order_items.order_id=orders.id
-    WHERE orders.business_date=$1::date
-    GROUP BY orders.id, users.display_name ORDER BY orders.id DESC
-  `, [date]);
-  res.json(rows);
+      orders.created_at AS "orderDate", orders.business_date::text AS "businessDate",
+      (orders.status<>'closed' AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE business_date=orders.business_date)) AS editable,
+      users.display_name AS "memberName", users.username AS "memberUsername",
+      COALESCE(items.item_count,0)::integer AS "itemCount", COALESCE(items.total_quantity,0)::integer AS "totalQuantity"
+    FROM orders JOIN users ON users.id=orders.user_id
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) AS item_count, COALESCE(SUM(quantity),0) AS total_quantity
+      FROM order_items WHERE order_id=orders.id
+    ) items ON TRUE
+    ${where}
+    ORDER BY orders.created_at DESC, orders.id DESC
+    LIMIT $${values.length + 1} OFFSET $${values.length + 2}
+  `, listValues);
+  res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });
+}
+
+app.get('/api/orders', requireAuth, async (req, res) => listOrders(req, res));
+
+app.get('/api/orders/history', requireAuth, async (req, res) => {
+  const range = validateOrderDateRange(req.query.start_date, req.query.end_date);
+  if (range.error) return res.status(400).json({ error:range.error });
+  return listOrders(req, res, range);
 });
 
 app.get('/api/orders/:id', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(`SELECT orders.id, orders.order_number AS "orderNumber", orders.status, orders.created_at AS "createdAt", users.display_name AS "memberName" FROM orders JOIN users ON users.id=orders.user_id WHERE orders.id=$1`, [req.params.id]);
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(404).json({ error:'查無訂單' });
+  const values = [id];
+  const scope = orderScope(req, values);
+  const { rows } = await pool.query(`
+    SELECT orders.id, orders.order_number AS "orderNumber", orders.business_date::text AS "businessDate",
+      orders.status, orders.created_at AS "createdAt", users.display_name AS "memberName",
+      users.username AS "memberUsername", users.customer_code AS "customerCode", users.phone, users.tax_id AS "taxId",
+      (orders.status<>'closed' AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE business_date=orders.business_date)) AS editable
+    FROM orders JOIN users ON users.id=orders.user_id WHERE orders.id=$1 AND ${scope}
+  `, values);
   const order = rows[0];
-  if (!order) return res.status(404).json({ error: '查無訂單' });
-  order.items = (await pool.query(`SELECT barcode_snapshot AS barcode, product_name_snapshot AS name, specification_snapshot AS specification, quantity, legacy_quantity AS "originalQuantity", note FROM order_items WHERE order_id=$1 ORDER BY id`, [order.id])).rows;
+  if (!order) return res.status(404).json({ error:'查無訂單，或您沒有權限查看此訂單' });
+  order.items = (await pool.query(`
+    SELECT id, barcode_snapshot AS barcode, product_name_snapshot AS name,
+      specification_snapshot AS specification, quantity, legacy_quantity AS "originalQuantity", note
+    FROM order_items WHERE order_id=$1 ORDER BY id
+  `, [order.id])).rows;
   res.json(order);
+});
+
+async function lockEditableOrder(client, req, orderId) {
+  const order = (await client.query(`
+    SELECT orders.id, orders.user_id AS "userId", orders.status,
+      NOT EXISTS (SELECT 1 FROM daily_closings WHERE business_date=orders.business_date) AS editable
+    FROM orders WHERE orders.id=$1 FOR UPDATE
+  `, [orderId])).rows[0];
+  if (!order || (req.user.role !== 'admin' && Number(order.userId) !== Number(req.user.id))) {
+    throw Object.assign(new Error('查無訂單，或您沒有權限修改此訂單'), { statusCode:404 });
+  }
+  if (order.status === 'closed' || !order.editable) {
+    throw Object.assign(new Error('此訂單已結單，無法修改'), { statusCode:409 });
+  }
+  return order;
+}
+
+app.put('/api/orders/:id/items/:itemId', requireAuth, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  const quantity = Number(req.body.quantity);
+  const note = String(req.body.note || '').slice(0, 500);
+  if (!Number.isInteger(orderId) || orderId < 1 || !Number.isInteger(itemId) || itemId < 1) return res.status(404).json({ error:'查無訂單品項' });
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) return res.status(400).json({ error:'商品數量須為 1 至 9999 的整數' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockEditableOrder(client, req, orderId);
+    const { rows } = await client.query(`
+      UPDATE order_items SET quantity=$1, note=$2 WHERE id=$3 AND order_id=$4
+      RETURNING id, quantity, note
+    `, [quantity, note, itemId, orderId]);
+    if (!rows[0]) throw Object.assign(new Error('查無訂單品項'), { statusCode:404 });
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(error.statusCode || 500).json({ error:error.statusCode ? error.message : '修改訂單品項失敗' });
+  } finally { client.release(); }
+});
+
+app.delete('/api/orders/:id/items/:itemId', requireAuth, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  if (!Number.isInteger(orderId) || orderId < 1 || !Number.isInteger(itemId) || itemId < 1) return res.status(404).json({ error:'查無訂單品項' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockEditableOrder(client, req, orderId);
+    const deleted = await client.query('DELETE FROM order_items WHERE id=$1 AND order_id=$2', [itemId, orderId]);
+    if (!deleted.rowCount) throw Object.assign(new Error('查無訂單品項'), { statusCode:404 });
+    const remaining = Number((await client.query('SELECT COUNT(*) AS count FROM order_items WHERE order_id=$1', [orderId])).rows[0].count);
+    if (!remaining) await client.query('DELETE FROM orders WHERE id=$1', [orderId]);
+    await client.query('COMMIT');
+    res.json({ deleted:1, orderDeleted:remaining === 0, remaining });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(error.statusCode || 500).json({ error:error.statusCode ? error.message : '刪除訂單品項失敗' });
+  } finally { client.release(); }
+});
+
+app.delete('/api/orders/:id', requireAuth, async (req, res) => {
+  const orderId = Number(req.params.id);
+  if (!Number.isInteger(orderId) || orderId < 1) return res.status(404).json({ error:'查無訂單' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await lockEditableOrder(client, req, orderId);
+    await client.query('DELETE FROM orders WHERE id=$1', [orderId]);
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(error.statusCode || 500).json({ error:error.statusCode ? error.message : '刪除訂單失敗' });
+  } finally { client.release(); }
 });
 
 app.get('/api/admin/orders/summary', requireAuth, requireAdmin, async (_req, res) => {
@@ -336,16 +464,23 @@ app.get('/api/admin/orders/summary', requireAuth, requireAdmin, async (_req, res
 
 app.get('/api/admin/orders', requireAuth, requireAdmin, async (req, res) => {
   const query = String(req.query.query || '').trim().slice(0, 200);
-  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? String(req.query.from) : '';
-  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? String(req.query.to) : '';
+  const from = String(req.query.from || '');
+  const to = String(req.query.to || '');
   const status = ['created', 'closed'].includes(String(req.query.status || '')) ? String(req.query.status) : '';
   const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-  const pageSize = Math.min(100, Math.max(10, Number.parseInt(req.query.pageSize, 10) || 20));
+  const pageSize = Math.min(50, Math.max(10, Number.parseInt(req.query.pageSize, 10) || 50));
   const values = [];
   const conditions = [];
   const add = (value) => { values.push(value); return `$${values.length}`; };
-  if (from) conditions.push(`orders.business_date >= ${add(from)}::date`);
-  if (to) conditions.push(`orders.business_date <= ${add(to)}::date`);
+  if (from || to) {
+    const range = validateOrderDateRange(from, to);
+    if (range.error) return res.status(400).json({ error:range.error });
+    conditions.push(`orders.business_date >= ${add(range.startDate)}::date`);
+    conditions.push(`orders.business_date < (${add(range.endDate)}::date + INTERVAL '1 day')`);
+  } else {
+    conditions.push(`orders.business_date >= date_trunc('month', NOW())::date`);
+    conditions.push(`orders.business_date < (date_trunc('month', NOW()) + INTERVAL '1 month')::date`);
+  }
   if (status) conditions.push(`orders.status = ${add(status)}`);
   if (query) {
     const placeholder = add(`%${query}%`);
@@ -367,7 +502,7 @@ app.get('/api/admin/orders', requireAuth, requireAdmin, async (req, res) => {
       FROM order_items WHERE order_id=orders.id
     ) items ON TRUE
     ${where}
-    ORDER BY orders.business_date DESC, orders.id DESC
+    ORDER BY orders.created_at DESC, orders.id DESC
     LIMIT $${values.length + 1} OFFSET $${values.length + 2}
   `, listValues);
   res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });

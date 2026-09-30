@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null };
+const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -48,6 +48,16 @@ function showMessage(selector, text, kind = 'error') {
 
 function clearMessage(selector) { $(selector).className = 'message hidden'; }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char])); }
+function setAuthenticatedUi(user) {
+  state.user = user;
+  $('#user-name').textContent = user ? (user.display_name || user.displayName) : '';
+  $('#logout-button').classList.toggle('hidden', !user);
+  $('#login-nav').classList.toggle('hidden', Boolean(user));
+  const isAdmin = user?.role === 'admin';
+  $('#admin-orders-nav').classList.toggle('hidden', !isAdmin);
+  $('#products-nav').classList.toggle('hidden', !isAdmin);
+  $('#schedule-nav').classList.toggle('hidden', !isAdmin);
+}
 function formatDateTime(value) {
   const text = String(value || '');
   const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text) ? text : `${text.replace(' ', 'T')}Z`;
@@ -92,20 +102,39 @@ function clearOrderForm(mode) {
 
 async function loadOrders(targetSelector, limit = 0) {
   const target = $(targetSelector);
-  const columns = targetSelector === '#order-list' ? 6 : 5;
+  const isFullList = targetSelector === '#order-list';
+  const columns = isFullList ? 7 : 5;
   if (!state.user) { target.innerHTML = `<tr><td colspan="${columns}" class="empty">登入後顯示訂單</td></tr>`; return; }
   try {
-    const orders = await api(`/api/orders?date=${encodeURIComponent($('#order-date').value)}`);
-    const rows = limit ? orders.slice(0, limit) : orders;
-    target.innerHTML = rows.length ? rows.map((order) => `<tr><td><b>#${escapeHtml(order.orderNumber)}</b></td><td>${escapeHtml(formatDateTime(order.createdAt))}</td><td>${escapeHtml(order.memberName)}</td><td>${order.itemCount} 項</td>${targetSelector === '#order-list' ? `<td>${order.totalQuantity}</td>` : ''}<td><span class="status-tag ${order.editable ? '' : 'disabled-tag'}">${order.editable ? '當日可編輯' : '已鎖定'}</span></td></tr>`).join('') : `<tr><td colspan="${columns}" class="empty">此日期尚無訂單</td></tr>`;
-  } catch (error) { target.innerHTML = `<tr><td colspan="${columns}" class="empty">${escapeHtml(error.message)}</td></tr>`; }
+    const params = new URLSearchParams({ page:String(isFullList ? state.memberOrderPage : 1), pageSize:String(limit || 50) });
+    let endpoint = '/api/orders';
+    if (isFullList && state.memberOrderMode === 'history') {
+      endpoint = '/api/orders/history';
+      params.set('start_date', $('#history-start-date').value);
+      params.set('end_date', $('#history-end-date').value);
+    }
+    const data = await api(`${endpoint}?${params}`);
+    const rows = data.items;
+    target.innerHTML = rows.length ? rows.map((order) => `<tr><td><b>#${escapeHtml(order.orderNumber)}</b></td><td>${escapeHtml(formatDateTime(order.orderDate || order.createdAt))}</td><td>${escapeHtml(order.memberName)}</td><td>${order.itemCount} 項</td>${isFullList ? `<td>${order.totalQuantity}</td>` : ''}<td><span class="status-tag ${order.editable ? '' : 'disabled-tag'}">${order.editable ? '可編輯' : '已鎖定'}</span></td>${isFullList ? `<td><button class="text-button" data-view-member-order="${order.id}" type="button">查看明細</button></td>` : ''}</tr>`).join('') : `<tr><td colspan="${columns}" class="empty">查無符合的訂單</td></tr>`;
+    if (isFullList) {
+      state.memberOrderPage = data.page;
+      state.memberOrderTotalPages = data.totalPages;
+      $('#member-order-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
+      $('#member-order-page-prev').disabled = data.page <= 1;
+      $('#member-order-page-next').disabled = data.page >= data.totalPages;
+      clearMessage('#history-order-message');
+    }
+  } catch (error) {
+    target.innerHTML = `<tr><td colspan="${columns}" class="empty">${escapeHtml(error.message)}</td></tr>`;
+    if (isFullList) showMessage('#history-order-message', error.message);
+  }
 }
 
 async function loadAdminOrders() {
   if (!state.user || state.user.role !== 'admin') return;
   const target = $('#admin-order-list');
   target.innerHTML = '<tr><td colspan="8" class="empty">載入中</td></tr>';
-  const params = new URLSearchParams({ page:String(state.adminOrderPage), pageSize:'20' });
+  const params = new URLSearchParams({ page:String(state.adminOrderPage), pageSize:'50' });
   const filters = {
     from:$('#admin-order-from').value,
     to:$('#admin-order-to').value,
@@ -133,8 +162,10 @@ async function loadAdminOrders() {
     $('#admin-order-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
     $('#admin-order-page-prev').disabled = data.page <= 1;
     $('#admin-order-page-next').disabled = data.page >= data.totalPages;
+    clearMessage('#admin-order-message');
   } catch (error) {
     target.innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(error.message)}</td></tr>`;
+    showMessage('#admin-order-message', error.message);
   }
 }
 
@@ -146,22 +177,29 @@ function closeOrderDetail() {
 
 async function openOrderDetail(id) {
   try {
-    const order = await api(`/api/admin/orders/${id}`);
+    const order = await api(`/api/orders/${id}`);
     state.adminOrder = order;
     $('#order-detail-title').textContent = `#${order.orderNumber}`;
     $('#order-detail-meta').innerHTML = `
       <div><span>客戶名稱</span><b>${escapeHtml(order.memberName)}</b><small>${escapeHtml(order.memberUsername)}</small></div>
       <div><span>營業日期</span><b>${escapeHtml(order.businessDate)}</b><small>${escapeHtml(formatDateTime(order.createdAt))}</small></div>
       <div><span>客戶資料</span><b>${escapeHtml(order.phone || '未提供電話')}</b><small>統編：${escapeHtml(order.taxId || '—')}　代碼：${escapeHtml(order.customerCode || '—')}</small></div>
-      <div><span>訂單狀態</span><b>${order.editable ? '待結單' : '已結單'}</b><small>${order.editable ? '可勾選並刪除品項' : '已鎖定，不可修改'}</small></div>`;
+      <div><span>訂單狀態</span><b>${order.editable ? '待結單' : '已結單'}</b><small>${order.editable ? '可修改數量、備註或刪除品項' : '已鎖定，不可修改'}</small></div>`;
     $('#order-detail-items').innerHTML = order.items.length ? order.items.map((item) => `<tr>
-      <td><input class="detail-item-check" type="checkbox" value="${item.id}" aria-label="選取 ${escapeHtml(item.name)}" ${order.editable ? '' : 'disabled'}></td>
+      <td><input class="detail-item-check" type="checkbox" value="${item.id}" aria-label="選取 ${escapeHtml(item.name)}" ${order.editable && state.user.role === 'admin' ? '' : 'disabled'}></td>
       <td>${escapeHtml(item.barcode)}</td><td><b>${escapeHtml(item.name)}</b></td><td>${escapeHtml(item.specification || '—')}</td>
-      <td>${item.quantity}${item.originalQuantity && item.originalQuantity !== String(item.quantity) ? `<small class="original-quantity">原始：${escapeHtml(item.originalQuantity)}</small>` : ''}</td><td>${escapeHtml(item.note || '—')}</td>
-    </tr>`).join('') : '<tr><td colspan="6" class="empty">此訂單沒有商品明細</td></tr>';
+      <td><input class="detail-quantity" data-item-quantity="${item.id}" type="number" min="1" max="9999" value="${item.quantity}" ${order.editable ? '' : 'disabled'}>${item.originalQuantity && item.originalQuantity !== String(item.quantity) ? `<small class="original-quantity">原始：${escapeHtml(item.originalQuantity)}</small>` : ''}</td>
+      <td><input class="detail-note" data-item-note="${item.id}" maxlength="500" value="${escapeHtml(item.note || '')}" placeholder="備註" ${order.editable ? '' : 'disabled'}></td>
+      <td class="row-actions"><button class="text-button" data-save-order-item="${item.id}" type="button" ${order.editable ? '' : 'disabled'}>儲存</button><button class="text-button danger" data-delete-order-item="${item.id}" type="button" ${order.editable ? '' : 'disabled'}>刪除</button></td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty">此訂單沒有商品明細</td></tr>';
+    const isAdmin = state.user.role === 'admin';
+    $('#order-detail-select-wrap').classList.toggle('hidden', !isAdmin);
+    $('#order-detail-delete').classList.toggle('hidden', !isAdmin);
+    $('#order-detail-export').classList.toggle('hidden', !isAdmin);
     $('#order-detail-select-all').checked = false;
-    $('#order-detail-select-all').disabled = !order.editable || !order.items.length;
-    $('#order-detail-delete').disabled = !order.editable || !order.items.length;
+    $('#order-detail-select-all').disabled = !isAdmin || !order.editable || !order.items.length;
+    $('#order-detail-delete').disabled = !isAdmin || !order.editable || !order.items.length;
+    $('#order-detail-delete-order').disabled = !order.editable;
     $('#order-detail-export').href = `${appBase}/api/admin/orders/${order.id}/export`;
     clearMessage('#order-detail-message');
     $('#order-detail-modal').classList.remove('hidden');
@@ -224,12 +262,7 @@ function editProduct(id) {
 $('#login-form').addEventListener('submit', async (event) => {
   event.preventDefault(); clearMessage('#login-error');
   try {
-    state.user = await api('/api/login', { method:'POST', body:JSON.stringify({ username:$('#login-username').value, password:$('#login-password').value }) });
-    $('#user-name').textContent = state.user.displayName;
-    $('#logout-button').classList.remove('hidden');
-    $('#admin-orders-nav').classList.toggle('hidden', state.user.role !== 'admin');
-    $('#products-nav').classList.toggle('hidden', state.user.role !== 'admin');
-    $('#schedule-nav').classList.toggle('hidden', state.user.role !== 'admin');
+    setAuthenticatedUi(await api('/api/login', { method:'POST', body:JSON.stringify({ username:$('#login-username').value, password:$('#login-password').value }) }));
     showWork('scan');
   } catch (error) { showMessage('#login-error', error.message); }
 });
@@ -237,10 +270,8 @@ $('#login-form').addEventListener('submit', async (event) => {
 $('#logout-button').addEventListener('click', async () => {
   try { await api('/api/logout', { method:'POST' }); } catch (_) {}
   clearOrderForm('scan'); clearOrderForm('manual');
-  state.user = null; $('#user-name').textContent = ''; $('#logout-button').classList.add('hidden'); showPage('login');
-  $('#admin-orders-nav').classList.add('hidden');
-  $('#products-nav').classList.add('hidden');
-  $('#schedule-nav').classList.add('hidden');
+  setAuthenticatedUi(null);
+  showPage('login');
   closeOrderDetail();
 });
 
@@ -302,7 +333,28 @@ $('#scan-form').addEventListener('submit', async (event) => {
 $('#manual-form').addEventListener('submit', async (event) => { event.preventDefault(); try { if (!state.manualProduct || state.manualProduct.barcode !== $('#manual-barcode').value.trim()) await lookupProduct($('#manual-barcode').value, 'manual'); await createSingleItemOrder('manual'); } catch (error) { showMessage('#manual-message', error.message); } });
 $('#manual-lookup').addEventListener('click', async () => { try { await lookupProduct($('#manual-barcode').value, 'manual'); } catch (error) { state.manualProduct = null; setProduct($('#manual-product'), null, '輸入條碼後查詢商品'); showMessage('#manual-message', error.message); } });
 $('#scan-clear').addEventListener('click', () => clearOrderForm('scan'));
-$('#query-orders').addEventListener('click', () => loadOrders('#order-list'));
+$('#history-order-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  state.memberOrderMode = 'history';
+  state.memberOrderPage = 1;
+  $('#member-orders-title').textContent = '歷史訂單區間查詢';
+  $('#member-orders-caption').textContent = `${$('#history-start-date').value} 至 ${$('#history-end-date').value}（包含結束當天）`;
+  loadOrders('#order-list');
+});
+$('#query-current-month').addEventListener('click', () => {
+  state.memberOrderMode = 'month';
+  state.memberOrderPage = 1;
+  $('#member-orders-title').textContent = '當月訂單';
+  $('#member-orders-caption').textContent = '自動顯示本月最新訂單，每頁 50 筆。';
+  clearMessage('#history-order-message');
+  loadOrders('#order-list');
+});
+$('#member-order-page-prev').addEventListener('click', () => { if (state.memberOrderPage > 1) { state.memberOrderPage -= 1; loadOrders('#order-list'); } });
+$('#member-order-page-next').addEventListener('click', () => { if (state.memberOrderPage < state.memberOrderTotalPages) { state.memberOrderPage += 1; loadOrders('#order-list'); } });
+$('#order-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-view-member-order]');
+  if (button) openOrderDetail(Number(button.dataset.viewMemberOrder));
+});
 $('#admin-order-filters').addEventListener('submit', (event) => { event.preventDefault(); state.adminOrderPage = 1; loadAdminOrders(); });
 $('#admin-order-reset').addEventListener('click', () => { $('#admin-order-filters').reset(); state.adminOrderPage = 1; loadAdminOrders(); });
 $('#admin-order-page-prev').addEventListener('click', () => { if (state.adminOrderPage > 1) { state.adminOrderPage -= 1; loadAdminOrders(); } });
@@ -327,6 +379,44 @@ $('#order-detail-delete').addEventListener('click', async () => {
     showToast(`已刪除 ${result.deleted} 個訂單品項`);
     if (result.orderDeleted) closeOrderDetail(); else await openOrderDetail(order.id);
     loadAdminOrders();
+  } catch (error) { showMessage('#order-detail-message', error.message); }
+});
+$('#order-detail-items').addEventListener('click', async (event) => {
+  const saveButton = event.target.closest('[data-save-order-item]');
+  const deleteButton = event.target.closest('[data-delete-order-item]');
+  if (!saveButton && !deleteButton) return;
+  const order = state.adminOrder;
+  const itemId = Number((saveButton || deleteButton).dataset[saveButton ? 'saveOrderItem' : 'deleteOrderItem']);
+  if (!order) return;
+  clearMessage('#order-detail-message');
+  try {
+    if (saveButton) {
+      const quantity = Number($(`[data-item-quantity="${itemId}"]`).value);
+      const note = $(`[data-item-note="${itemId}"]`).value;
+      await api(`/api/orders/${order.id}/items/${itemId}`, { method:'PUT', body:JSON.stringify({ quantity, note }) });
+      showToast('訂單品項已更新');
+      await openOrderDetail(order.id);
+    } else {
+      if (!window.confirm('確定要刪除這個訂單品項嗎？')) return;
+      const result = await api(`/api/orders/${order.id}/items/${itemId}`, { method:'DELETE' });
+      showToast('訂單品項已刪除');
+      if (result.orderDeleted) closeOrderDetail(); else await openOrderDetail(order.id);
+    }
+    loadOrders('#order-list');
+    loadOrders('#recent-orders', 5);
+    if (state.user.role === 'admin') loadAdminOrders();
+  } catch (error) { showMessage('#order-detail-message', error.message); }
+});
+$('#order-detail-delete-order').addEventListener('click', async () => {
+  const order = state.adminOrder;
+  if (!order || !window.confirm(`確定刪除整張訂單 #${order.orderNumber} 嗎？`)) return;
+  try {
+    await api(`/api/orders/${order.id}`, { method:'DELETE' });
+    closeOrderDetail();
+    showToast('訂單已刪除');
+    loadOrders('#order-list');
+    loadOrders('#recent-orders', 5);
+    if (state.user.role === 'admin') loadAdminOrders();
   } catch (error) { showMessage('#order-detail-message', error.message); }
 });
 $('#admin-export').addEventListener('click', async () => {
@@ -415,6 +505,39 @@ $$('[data-page]').forEach((button) => button.addEventListener('click', () => but
 $$('[data-go-work]').forEach((button) => button.addEventListener('click', () => state.user ? showWork(button.dataset.goWork) : showPage('login')));
 $$('[data-work]').forEach((button) => button.addEventListener('click', () => showWork(button.dataset.work)));
 
-$('#order-date').value = new Date().toLocaleDateString('en-CA');
-$('#admin-export-date').value = new Date().toLocaleDateString('en-CA');
-api('/api/me').then((user) => { state.user = user; $('#user-name').textContent = user.display_name || user.displayName; $('#logout-button').classList.remove('hidden'); $('#admin-orders-nav').classList.toggle('hidden', user.role !== 'admin'); $('#products-nav').classList.toggle('hidden', user.role !== 'admin'); $('#schedule-nav').classList.toggle('hidden', user.role !== 'admin'); loadOrders('#recent-orders', 5); }).catch(() => {});
+function sortTableByColumn(header) {
+  const table = header.closest('table');
+  const body = table?.tBodies[0];
+  if (!body) return;
+  const headers = [...header.parentElement.children];
+  const column = headers.indexOf(header);
+  const direction = header.dataset.sortDirection === 'asc' ? 'desc' : 'asc';
+  headers.forEach((item) => { delete item.dataset.sortDirection; item.removeAttribute('aria-sort'); });
+  header.dataset.sortDirection = direction;
+  header.setAttribute('aria-sort', direction === 'asc' ? 'ascending' : 'descending');
+  const collator = new Intl.Collator('zh-Hant', { numeric:true, sensitivity:'base' });
+  const rows = [...body.rows].filter((row) => !row.querySelector('.empty'));
+  rows.sort((left, right) => {
+    const leftValue = left.cells[column]?.querySelector('input,select')?.value || left.cells[column]?.textContent.trim() || '';
+    const rightValue = right.cells[column]?.querySelector('input,select')?.value || right.cells[column]?.textContent.trim() || '';
+    return collator.compare(leftValue, rightValue) * (direction === 'asc' ? 1 : -1);
+  });
+  rows.forEach((row) => body.appendChild(row));
+}
+
+$$('table thead th').forEach((header) => {
+  if (['選取', '操作', '檔案'].includes(header.textContent.trim())) return;
+  header.classList.add('sortable-header');
+  header.tabIndex = 0;
+  header.title = '點擊快速排序';
+  header.addEventListener('click', () => sortTableByColumn(header));
+  header.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); sortTableByColumn(header); } });
+});
+
+const today = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Taipei' });
+const historyStart = new Date(`${today}T00:00:00`);
+historyStart.setMonth(historyStart.getMonth() - 1);
+$('#history-start-date').value = historyStart.toLocaleDateString('en-CA');
+$('#history-end-date').value = today;
+$('#admin-export-date').value = today;
+api('/api/me').then((user) => { setAuthenticatedUi(user); loadOrders('#recent-orders', 5); }).catch(() => setAuthenticatedUi(null));
