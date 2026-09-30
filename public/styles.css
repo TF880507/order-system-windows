@@ -88,6 +88,7 @@ textarea { min-height:94px; resize:vertical; }
 .toggle-row input { width:20px; height:20px; margin:0; accent-color:#222a40; }
 .schedule-actions { flex-wrap:wrap; }
 .download-link { color:inherit; text-decoration:none; }
+.ready-note { display:inline-block; margin-left:7px; color:#169454; }
 .message { margin-top:12px; padding:10px 12px; border-radius:7px; font-size:13px; }
 .message.error { background:#fff0f0; color:#b42318; }
 .message.success { background:#eaf8ef; color:#137a45; }

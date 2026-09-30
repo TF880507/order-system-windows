@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null };
+const state = { user: null, scanProduct: null, manualProduct: null, products: [], customers: [], editingProductId: null };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -21,6 +21,7 @@ function showPage(name) {
   if (name === 'workspace') setTimeout(() => scanner.focus(), 0);
   if (name === 'products') { loadProducts(); setTimeout(() => productScanner.focus(), 0); }
   if (name === 'schedule') loadSchedule();
+  if (name === 'customers') loadCustomers();
 }
 
 function showWork(name) {
@@ -48,7 +49,8 @@ function showMessage(selector, text, kind = 'error') {
 function clearMessage(selector) { $(selector).className = 'message hidden'; }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char])); }
 function formatDateTime(value) {
-  const parsed = new Date(`${String(value).replace(' ', 'T')}Z`);
+  const raw = String(value);
+  const parsed = new Date(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(raw) ? `${raw.replace(' ', 'T')}+08:00` : raw);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-TW', { hour12:false });
 }
 
@@ -120,7 +122,16 @@ async function loadSchedule() {
     $('#export-date').value ||= data.today;
     $('#schedule-state').textContent = data.setting.enabled ? `每日 ${data.setting.closeTime} 啟用中` : '排程已停用';
     $('#schedule-state').classList.toggle('disabled-tag', !data.setting.enabled);
-    target.innerHTML = data.exports.length ? data.exports.map((item) => `<tr><td><b>${escapeHtml(item.businessDate)}</b></td><td>${item.exportType === 'automatic' ? '自動排程' : '手動匯出'}</td><td>${escapeHtml(formatDateTime(item.exportedAt))}</td><td>${item.orderCount}</td><td>${item.itemCount} 項／${item.totalQuantity} 件</td><td><span class="status-tag">${item.closed ? '已結單' : '快照'}</span></td><td><a class="text-button download-link" href="${appBase}/api/exports/${item.id}/download">下載 CSV</a></td></tr>`).join('') : '<tr><td colspan="7" class="empty">尚無匯出紀錄</td></tr>';
+    target.innerHTML = data.exports.length ? data.exports.map((item) => `<tr><td><b>${escapeHtml(item.businessDate)}</b></td><td>${item.exportType === 'automatic' ? '自動排程' : '手動匯出'}</td><td>${escapeHtml(formatDateTime(item.exportedAt))}</td><td>${item.orderCount}</td><td>${item.itemCount} 項／${item.totalQuantity} 件</td><td><span class="status-tag">${item.closed ? '已結單' : '快照'}</span></td><td><a class="text-button download-link" href="${appBase}/api/exports/${item.id}/download">下載 Excel</a></td></tr>`).join('') : '<tr><td colspan="7" class="empty">尚無匯出紀錄</td></tr>';
+  } catch (error) { target.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`; }
+}
+
+async function loadCustomers() {
+  if (!state.user || state.user.role !== 'admin') return;
+  const target = $('#customer-list'); target.innerHTML = '<tr><td colspan="7" class="empty">載入中</td></tr>';
+  try {
+    const customers = await api(`/api/customers?query=${encodeURIComponent($('#customer-search').value.trim())}`); state.customers = customers;
+    target.innerHTML = customers.length ? customers.map((customer) => `<tr><td>${escapeHtml(customer.customerNo)}</td><td><b>${escapeHtml(customer.name)}</b></td><td>${escapeHtml(customer.account)}</td><td>${escapeHtml(customer.telephone || '—')}</td><td>${escapeHtml(customer.taxId)}</td><td><span class="status-tag ${customer.suspended ? 'disabled-tag' : ''}">${customer.suspended ? '停用' : '啟用'}</span></td><td><button class="text-button" data-reset-customer="${customer.id}" type="button">重設登入密碼</button>${customer.appPasswordReady ? '<small class="ready-note">已設定</small>' : ''}</td></tr>`).join('') : '<tr><td colspan="7" class="empty">查無客戶</td></tr>';
   } catch (error) { target.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`; }
 }
 
@@ -154,6 +165,7 @@ $('#login-form').addEventListener('submit', async (event) => {
     $('#logout-button').classList.remove('hidden');
     $('#products-nav').classList.toggle('hidden', state.user.role !== 'admin');
     $('#schedule-nav').classList.toggle('hidden', state.user.role !== 'admin');
+    $('#customers-nav').classList.toggle('hidden', state.user.role !== 'admin');
     showWork('scan');
   } catch (error) { showMessage('#login-error', error.message); }
 });
@@ -164,6 +176,7 @@ $('#logout-button').addEventListener('click', async () => {
   state.user = null; $('#user-name').textContent = ''; $('#logout-button').classList.add('hidden'); showPage('login');
   $('#products-nav').classList.add('hidden');
   $('#schedule-nav').classList.add('hidden');
+  $('#customers-nav').classList.add('hidden');
 });
 
 let scanSaving = false;
@@ -280,7 +293,7 @@ $('#manual-export').addEventListener('click', async () => {
   clearMessage('#export-message');
   try {
     const exported = await api('/api/schedule/export', { method:'POST', body:JSON.stringify({ businessDate:$('#export-date').value }) });
-    showMessage('#export-message', 'CSV 已建立並開始下載', 'success');
+    showMessage('#export-message', 'Excel 已建立並開始下載', 'success');
     window.location.assign(`${appBase}/api/exports/${exported.id}/download`);
     loadSchedule();
   } catch (error) { showMessage('#export-message', error.message); }
@@ -296,9 +309,19 @@ $('#manual-close').addEventListener('click', async () => {
   } catch (error) { showMessage('#export-message', error.message); }
 });
 $('#schedule-refresh').addEventListener('click', loadSchedule);
+$('#customers-refresh').addEventListener('click', loadCustomers);
+let customerSearchTimer;
+$('#customer-search').addEventListener('input', () => { clearTimeout(customerSearchTimer); customerSearchTimer = setTimeout(loadCustomers, 180); });
+$('#customer-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-reset-customer]'); if (!button) return;
+  const customer = state.customers.find((item) => item.id === Number(button.dataset.resetCustomer)); if (!customer) return;
+  const password = window.prompt(`設定「${customer.name}」的新系統登入密碼（至少8字）`); if (password === null) return;
+  try { await api(`/api/customers/${customer.id}/reset-password`, { method:'POST', body:JSON.stringify({ password }) }); showToast(`已更新 ${customer.account} 的登入密碼`); loadCustomers(); }
+  catch (error) { showToast(error.message); }
+});
 $$('[data-page]').forEach((button) => button.addEventListener('click', () => button.dataset.page === 'workspace' && !state.user ? showPage('login') : showPage(button.dataset.page)));
 $$('[data-go-work]').forEach((button) => button.addEventListener('click', () => state.user ? showWork(button.dataset.goWork) : showPage('login')));
 $$('[data-work]').forEach((button) => button.addEventListener('click', () => showWork(button.dataset.work)));
 
 $('#order-date').value = new Date().toLocaleDateString('en-CA');
-api('/api/me').then((user) => { state.user = user; $('#user-name').textContent = user.display_name || user.displayName; $('#logout-button').classList.remove('hidden'); $('#products-nav').classList.toggle('hidden', user.role !== 'admin'); $('#schedule-nav').classList.toggle('hidden', user.role !== 'admin'); loadOrders('#recent-orders', 5); }).catch(() => {});
+api('/api/me').then((user) => { state.user = user; $('#user-name').textContent = user.display_name || user.displayName; $('#logout-button').classList.remove('hidden'); $('#products-nav').classList.toggle('hidden', user.role !== 'admin'); $('#schedule-nav').classList.toggle('hidden', user.role !== 'admin'); $('#customers-nav').classList.toggle('hidden', user.role !== 'admin'); loadOrders('#recent-orders', 5); }).catch(() => {});

@@ -18,18 +18,4 @@ function shiftDate(date, days) {
   return value.toISOString().slice(0, 10);
 }
 
-function csvCell(value) {
-  const text = String(value ?? '');
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function buildOrdersCsv(rows) {
-  const headings = ['營業日', '訂單編號', '建立時間', '會員', '商品條碼', '商品名稱', '規格', '數量', '備註', '狀態'];
-  const body = rows.map((row) => [
-    row.businessDate, row.orderNumber, row.createdAt, row.memberName,
-    row.barcode, row.productName, row.specification, row.quantity, row.note, row.status
-  ].map(csvCell).join(','));
-  return `\uFEFF${[headings.join(','), ...body].join('\r\n')}\r\n`;
-}
-
-module.exports = { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell, buildOrdersCsv };
+module.exports = { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate };

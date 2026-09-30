@@ -15,7 +15,7 @@
       <span id="user-name" class="user-name"></span>
       <button id="logout-button" class="button secondary hidden" type="button">登出</button>
     </header>
-    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button><button id="schedule-nav" class="hidden" data-page="schedule" type="button"><span>◷</span>排程與匯出</button></nav></aside>
+    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="customers-nav" class="hidden" data-page="customers" type="button"><span>♧</span>客戶管理</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button><button id="schedule-nav" class="hidden" data-page="schedule" type="button"><span>◷</span>排程與匯出</button></nav></aside>
     <main class="content">
       <section id="page-home" class="page active">
         <div class="page-heading"><div><h1>首頁</h1><p>歡迎使用會員訂單管理系統</p></div><button class="button primary" data-go-work="scan" type="button">開始建立訂單</button></div>
@@ -34,9 +34,9 @@
         <div class="page-heading"><div><h1>商品管理</h1><p>新增後可立刻供掃碼與手動輸入查詢使用。</p></div></div>
         <div class="product-manager">
           <section class="panel product-create"><div class="panel-heading"><h2 id="product-form-title">新增商品</h2></div>
-            <form id="product-form" class="order-form"><label>商品條碼<input id="product-barcode" autocomplete="off" spellcheck="false" maxlength="512" placeholder="掃描或輸入商品 barcode／QR Code 內容" required></label><p class="input-help">開啟此頁後可直接掃描；也可按「掃描條碼」後再掃。</p><div class="form-actions compact-actions"><button id="product-scan-resume" class="button secondary" type="button">掃描條碼</button></div><label>商品名稱<input id="product-name" maxlength="120" placeholder="例如：無糖綠茶 600ml" required></label><label>規格／備註<input id="product-specification" maxlength="300" placeholder="例如：24 入／箱（選填）"></label><p id="product-message" role="status" class="message hidden"></p><div class="form-actions"><button id="product-clear" class="button secondary" type="button">清除</button><button id="product-save" class="button primary" type="submit">儲存商品</button></div></form>
+            <form id="product-form" class="order-form"><label>商品條碼<input id="product-barcode" autocomplete="off" spellcheck="false" maxlength="20" placeholder="掃描或輸入商品條碼（最多20字）" required></label><p class="input-help">開啟此頁後可直接掃描；也可按「掃描條碼」後再掃。</p><div class="form-actions compact-actions"><button id="product-scan-resume" class="button secondary" type="button">掃描條碼</button></div><label>商品名稱<input id="product-name" maxlength="50" placeholder="例如：無糖綠茶 600ml" required></label><label>單位<input id="product-specification" maxlength="10" placeholder="例如：個、盒、組"></label><p id="product-message" role="status" class="message hidden"></p><div class="form-actions"><button id="product-clear" class="button secondary" type="button">清除</button><button id="product-save" class="button primary" type="submit">儲存商品</button></div></form>
           </section>
-          <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><input id="product-search" class="product-search" autocomplete="off" placeholder="搜尋商品名稱、條碼或規格"></div><button id="products-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>規格</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div></section>
+          <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><input id="product-search" class="product-search" autocomplete="off" placeholder="搜尋商品名稱、條碼或單位"></div><button id="products-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>單位</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div></section>
         </div>
       </section>
       <section id="page-schedule" class="page">
@@ -53,13 +53,19 @@
           </section>
           <section class="panel"><div class="panel-heading"><h2>手動操作</h2></div>
             <div class="order-form"><label>營業日期<input id="export-date" type="date"></label>
-              <p class="input-help">「匯出 CSV」只建立當下快照，不會鎖定當日訂單；「立即結單」會永久鎖定該日期。</p>
+              <p class="input-help">「匯出 Excel」只建立當下快照，不會鎖定當日訂單；「立即結單」會永久鎖定該日期。</p>
               <p id="export-message" class="message hidden"></p>
-              <div class="form-actions schedule-actions"><button id="manual-export" class="button secondary" type="button">匯出 CSV</button><button id="manual-close" class="button danger-button" type="button">立即結單</button></div>
+              <div class="form-actions schedule-actions"><button id="manual-export" class="button secondary" type="button">匯出 Excel</button><button id="manual-close" class="button danger-button" type="button">立即結單</button></div>
             </div>
           </section>
         </div>
         <section class="panel schedule-history"><div class="panel-heading"><h2>最近匯出與結單紀錄</h2><button id="schedule-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>營業日期</th><th>類型</th><th>執行時間</th><th>訂單</th><th>品項／數量</th><th>狀態</th><th>檔案</th></tr></thead><tbody id="schedule-list"><tr><td colspan="7" class="empty">載入中</td></tr></tbody></table></div></section>
+      </section>
+      <section id="page-customers" class="page">
+        <div class="page-heading"><div><h1>客戶管理</h1><p>直接讀取舊系統 customer 資料；可為客戶設定新系統登入密碼。</p></div></div>
+        <section class="panel"><div class="panel-heading products-heading"><div><h2>客戶／廠商清單</h2><input id="customer-search" class="product-search" autocomplete="off" placeholder="搜尋代號、名稱、帳號或統編"></div><button id="customers-refresh" class="button secondary" type="button">重新整理</button></div>
+          <div class="table-scroll"><table><thead><tr><th>客戶代號</th><th>名稱</th><th>登入帳號</th><th>電話</th><th>統編</th><th>狀態</th><th>操作</th></tr></thead><tbody id="customer-list"><tr><td colspan="7" class="empty">載入中</td></tr></tbody></table></div>
+        </section>
       </section>
     </main>
   </div>

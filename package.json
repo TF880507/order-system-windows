@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test *.test.cjs"
+    "test": "node --test *.test.cjs",
+    "analyze:dump": "node scripts/analyze-dump.cjs"
   },
   "engines": {
     "node": ">=20"
@@ -15,6 +16,6 @@
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "express": "^5.1.0",
-    "pg": "^8.16.3"
+    "mysql2": "^3.15.3"
   }
 }

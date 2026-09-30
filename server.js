@@ -1,424 +1,263 @@
+'use strict';
+
 const express = require('express');
-const { Pool } = require('pg');
+const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
-const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, buildOrdersCsv } = require('./schedule');
+const { getBusinessClock, shiftDate } = require('./schedule');
+const { createOrdersXlsx } = require('./xlsx');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const sessionHours = Number(process.env.SESSION_HOURS || 12);
 const initialAdminPassword = process.env.ADMIN_PASSWORD || 'test123';
-const databaseUrl = process.env.DATABASE_URL || 'postgresql://order_app:order_dev_password@127.0.0.1:5432/order_system';
-const pool = new Pool({ connectionString: databaseUrl });
+const mysqlHost = process.env.MYSQL_HOST || '127.0.0.1';
+const mysqlSsl = String(process.env.MYSQL_SSL || 'false').toLowerCase() === 'true';
+const allowInsecureRemote = String(process.env.MYSQL_ALLOW_INSECURE_REMOTE || 'false').toLowerCase() === 'true';
+const pool = mysql.createPool({
+  host:mysqlHost, port: Number(process.env.MYSQL_PORT || 3306),
+  user: process.env.MYSQL_USER || 'order_app', password: process.env.MYSQL_PASSWORD || 'order_dev_password',
+  database: process.env.MYSQL_DATABASE || 'order_system', waitForConnections:true,
+  connectionLimit:Number(process.env.MYSQL_CONNECTION_LIMIT || 10), charset:'utf8mb4', timezone:'+08:00',
+  dateStrings:true, supportBigNumbers:true, bigNumberStrings:true, multipleStatements:true,
+  ssl:mysqlSsl ? { rejectUnauthorized:String(process.env.MYSQL_SSL_REJECT_UNAUTHORIZED || 'true').toLowerCase() === 'true' } : undefined
+});
 
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit:'100kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+async function assertLegacyTables() {
+  const expected=['administrator','customer','detail','goods','order','roots','timer'];
+  const [rows]=await pool.query('SELECT table_name AS name FROM information_schema.tables WHERE table_schema=DATABASE()');
+  const names=new Set(rows.map((row)=>row.name)); const missing=expected.filter((name)=>!names.has(name));
+  if(missing.length) throw new Error(`客戶資料庫缺少必要資料表：${missing.join(', ')}`);
+}
+
+async function addIndexIfMissing(tableName,indexName,columns) {
+  const [rows]=await pool.execute('SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? AND index_name=? LIMIT 1',[tableName,indexName]);
+  if(!rows.length) await pool.query(`ALTER TABLE \`${tableName}\` ADD INDEX \`${indexName}\` (${columns})`);
+}
+
 async function initializeDatabase() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id BIGSERIAL PRIMARY KEY,
-      username TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'member',
-      active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS products (
-      id BIGSERIAL PRIMARY KEY,
-      barcode TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      specification TEXT DEFAULT '',
-      active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS orders (
-      id BIGSERIAL PRIMARY KEY,
-      order_number TEXT NOT NULL UNIQUE,
-      user_id BIGINT NOT NULL REFERENCES users(id),
-      status TEXT NOT NULL DEFAULT 'created',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS order_items (
-      id BIGSERIAL PRIMARY KEY,
-      order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-      product_id BIGINT NOT NULL REFERENCES products(id),
-      barcode_snapshot TEXT NOT NULL,
-      product_name_snapshot TEXT NOT NULL,
-      specification_snapshot TEXT DEFAULT '',
-      quantity INTEGER NOT NULL CHECK (quantity > 0),
-      note TEXT DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS sessions (
-      token TEXT PRIMARY KEY,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at TIMESTAMPTZ NOT NULL
-    );
-
-    ALTER TABLE orders ADD COLUMN IF NOT EXISTS business_date DATE;
-    UPDATE orders SET business_date=(created_at AT TIME ZONE 'Asia/Taipei')::date WHERE business_date IS NULL;
-    ALTER TABLE orders ALTER COLUMN business_date SET NOT NULL;
-
-    CREATE TABLE IF NOT EXISTS schedule_settings (
-      id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-      enabled BOOLEAN NOT NULL DEFAULT TRUE,
-      close_time TEXT NOT NULL DEFAULT '00:00',
-      timezone TEXT NOT NULL DEFAULT 'Asia/Taipei',
-      last_closed_date DATE,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_by BIGINT REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS order_exports (
-      id BIGSERIAL PRIMARY KEY,
-      business_date DATE NOT NULL,
-      export_type TEXT NOT NULL CHECK (export_type IN ('automatic', 'manual')),
-      exported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      exported_by BIGINT REFERENCES users(id),
-      order_count INTEGER NOT NULL,
-      item_count INTEGER NOT NULL,
-      total_quantity INTEGER NOT NULL,
-      csv_content TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS daily_closings (
-      business_date DATE PRIMARY KEY,
-      closed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      trigger_type TEXT NOT NULL CHECK (trigger_type IN ('automatic', 'manual')),
-      closed_by BIGINT REFERENCES users(id),
-      export_id BIGINT NOT NULL REFERENCES order_exports(id)
-    );
-
-    INSERT INTO schedule_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
-
-    CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_orders_business_date ON orders(business_date DESC);
-    CREATE INDEX IF NOT EXISTS idx_order_exports_business_date ON order_exports(business_date DESC, exported_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
-    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
-  `);
-
-  const adminHash = await bcrypt.hash(initialAdminPassword, 12);
-  await pool.query(`
-    INSERT INTO users (username, password_hash, display_name, role, active)
-    VALUES ('admin', $1, '系統管理員', 'admin', TRUE)
-    ON CONFLICT (username) DO UPDATE
-      SET password_hash = EXCLUDED.password_hash, role = 'admin', active = TRUE
-  `, [adminHash]);
-
-  const products = [
-    ['4719585678958', '測試商品 A', '標準包裝'],
-    ['4710088432415', '測試商品 B', '盒裝'],
-    ['4902430781026', '測試商品 C', '單入']
-  ];
-  for (const product of products) {
-    await pool.query(`
-      INSERT INTO products (barcode, name, specification)
-      VALUES ($1, $2, $3) ON CONFLICT (barcode) DO NOTHING
-    `, product);
+  if(!['localhost','127.0.0.1','mysql'].includes(mysqlHost)&&!mysqlSsl&&!allowInsecureRemote) {
+    throw new Error('拒絕未加密的遠端MySQL連線；請啟用MYSQL_SSL或使用同主機／安全通道');
   }
+  await assertLegacyTables();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS orderflow_accounts (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, username VARCHAR(64) NOT NULL, password_hash VARCHAR(255) NOT NULL,
+      display_name VARCHAR(80) NOT NULL, role ENUM('admin','member') NOT NULL DEFAULT 'member', customer_id INT NULL,
+      active TINYINT(1) NOT NULL DEFAULT 1, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id), UNIQUE KEY uq_orderflow_accounts_username (username), UNIQUE KEY uq_orderflow_accounts_customer (customer_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE IF NOT EXISTS orderflow_sessions (
+      token CHAR(64) NOT NULL, account_id BIGINT UNSIGNED NOT NULL, expires_at DATETIME NOT NULL,
+      PRIMARY KEY (token), KEY idx_orderflow_sessions_expires (expires_at),
+      CONSTRAINT fk_orderflow_session_account FOREIGN KEY (account_id) REFERENCES orderflow_accounts(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE IF NOT EXISTS orderflow_settings (
+      id TINYINT NOT NULL DEFAULT 1, enabled TINYINT(1) NOT NULL DEFAULT 1, last_closed_date DATE NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, updated_by BIGINT UNSIGNED NULL,
+      PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE IF NOT EXISTS orderflow_exports (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, business_date DATE NOT NULL, export_type ENUM('automatic','manual') NOT NULL,
+      exported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, exported_by BIGINT UNSIGNED NULL,
+      order_count INT UNSIGNED NOT NULL, item_count INT UNSIGNED NOT NULL, total_quantity BIGINT UNSIGNED NOT NULL,
+      file_name VARCHAR(160) NOT NULL, xlsx_data LONGBLOB NOT NULL,
+      PRIMARY KEY (id), KEY idx_orderflow_exports_date (business_date, exported_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE IF NOT EXISTS orderflow_daily_closings (
+      business_date DATE NOT NULL, closed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      trigger_type ENUM('automatic','manual') NOT NULL, closed_by BIGINT UNSIGNED NULL, export_id BIGINT UNSIGNED NOT NULL,
+      PRIMARY KEY (business_date), UNIQUE KEY uq_orderflow_closing_export (export_id),
+      CONSTRAINT fk_orderflow_closing_export FOREIGN KEY (export_id) REFERENCES orderflow_exports(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE IF NOT EXISTS orderflow_hidden_goods (
+      goods_id INT NOT NULL, hidden_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, hidden_by BIGINT UNSIGNED NULL,
+      PRIMARY KEY (goods_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    INSERT IGNORE INTO orderflow_settings (id,enabled) VALUES (1,1);
+    INSERT IGNORE INTO timer (time_id,hour,minute,seconds,status) VALUES (1,'24','00','00',2);
+  `);
+  await addIndexIfMissing('order','idx_orderflow_order_date_status','`o_date`,`status`');
+  const hash=await bcrypt.hash(initialAdminPassword,12);
+  await pool.execute(`INSERT IGNORE INTO orderflow_accounts (username,password_hash,display_name,role,active)
+    VALUES ('admin',?,'系統管理員','admin',1)`,[hash]);
 }
 
-function parseCookies(header = '') {
-  return Object.fromEntries(header.split(';').map((part) => {
-    const index = part.indexOf('=');
-    if (index < 0) return ['', ''];
-    return [part.slice(0, index).trim(), decodeURIComponent(part.slice(index + 1).trim())];
-  }).filter(([key]) => key));
+function parseCookies(header='') {
+  return Object.fromEntries(header.split(';').map((part)=>{const index=part.indexOf('=');return index<0?['','']:[part.slice(0,index).trim(),decodeURIComponent(part.slice(index+1).trim())];}).filter(([key])=>key));
 }
-
-async function requireAuth(req, res, next) {
+function verifyLegacyPassword(input,stored) {
+  if(!stored) return false;
+  if(String(input)===String(stored)) return true;
+  if(/^[0-9a-f]{32}$/i.test(stored)&&crypto.createHash('md5').update(input).digest('hex').toLowerCase()===stored.toLowerCase()) return true;
+  if(/^\$2[aby]\$/.test(stored)) return bcrypt.compareSync(input,stored);
+  try { return Buffer.from(stored,'base64').toString('utf8')===input; } catch(_) { return false; }
+}
+async function migrateLegacyLogin(username,password) {
+  const [admins]=await pool.execute('SELECT id,account,password FROM administrator WHERE account=? LIMIT 1',[username]);
+  if(admins[0]&&verifyLegacyPassword(password,admins[0].password)) return {username,passwordHash:await bcrypt.hash(password,12),displayName:username,role:'admin',customerId:null};
+  const [customers]=await pool.execute('SELECT c_index,c_account,c_password,c_name FROM customer WHERE c_account=? AND c_suspended=0 LIMIT 1',[username]);
+  if(customers[0]&&verifyLegacyPassword(password,customers[0].c_password)) return {username,passwordHash:await bcrypt.hash(password,12),displayName:customers[0].c_name,role:'member',customerId:customers[0].c_index};
+  return null;
+}
+async function requireAuth(req,res,next) {
   try {
-    const token = parseCookies(req.headers.cookie).order_session;
-    if (!token) return res.status(401).json({ error: '請先登入' });
-    const { rows } = await pool.query(`
-      SELECT users.id, users.username, users.display_name, users.role
-      FROM sessions JOIN users ON users.id = sessions.user_id
-      WHERE sessions.token = $1 AND sessions.expires_at > NOW() AND users.active = TRUE
-    `, [token]);
-    if (!rows[0]) return res.status(401).json({ error: '登入已逾時，請重新登入' });
-    req.user = rows[0];
-    req.sessionToken = token;
-    next();
-  } catch (error) { next(error); }
+    const token=parseCookies(req.headers.cookie).order_session; if(!token) return res.status(401).json({error:'請先登入'});
+    const [rows]=await pool.execute(`SELECT a.id,a.username,a.display_name AS displayName,a.role,a.customer_id AS customerId
+      FROM orderflow_sessions s JOIN orderflow_accounts a ON a.id=s.account_id WHERE s.token=? AND s.expires_at>NOW() AND a.active=1`,[token]);
+    if(!rows[0]) return res.status(401).json({error:'登入已逾時，請重新登入'}); req.user=rows[0]; req.sessionToken=token; next();
+  } catch(error) { next(error); }
 }
+function requireAdmin(req,res,next) { if(req.user.role!=='admin') return res.status(403).json({error:'僅系統管理員可使用此功能'}); next(); }
 
-function requireAdmin(req, res, next) {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: '僅系統管理員可使用此功能' });
-  next();
+app.post('/api/login',async(req,res)=>{
+  const username=String(req.body.username||'').trim(),password=String(req.body.password||'');
+  let [rows]=await pool.execute('SELECT * FROM orderflow_accounts WHERE username=? AND active=1 LIMIT 1',[username]); let account=rows[0];
+  if(!account||!await bcrypt.compare(password,account.password_hash)) {
+    const legacy=await migrateLegacyLogin(username,password); if(!legacy) return res.status(401).json({error:'帳號或密碼錯誤；舊站加密帳號需先重設密碼'});
+    await pool.execute(`INSERT INTO orderflow_accounts (username,password_hash,display_name,role,customer_id,active) VALUES (?,?,?,?,?,1)
+      ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash),display_name=VALUES(display_name),role=VALUES(role),customer_id=VALUES(customer_id),active=1`,
+      [legacy.username,legacy.passwordHash,legacy.displayName,legacy.role,legacy.customerId]);
+    [rows]=await pool.execute('SELECT * FROM orderflow_accounts WHERE username=? LIMIT 1',[username]); account=rows[0];
+  }
+  const token=crypto.randomBytes(32).toString('hex'); await pool.query('DELETE FROM orderflow_sessions WHERE expires_at<=NOW()');
+  await pool.execute('INSERT INTO orderflow_sessions (token,account_id,expires_at) VALUES (?,?,DATE_ADD(NOW(),INTERVAL ? HOUR))',[token,account.id,sessionHours]);
+  res.setHeader('Set-Cookie',`order_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${sessionHours*3600}`);
+  res.json({id:account.id,username:account.username,displayName:account.display_name,role:account.role,customerId:account.customer_id});
+});
+app.post('/api/logout',requireAuth,async(req,res)=>{await pool.execute('DELETE FROM orderflow_sessions WHERE token=?',[req.sessionToken]);res.setHeader('Set-Cookie','order_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');res.status(204).end();});
+app.get('/api/me',requireAuth,(req,res)=>res.json(req.user));
+
+app.get('/api/products/:barcode',requireAuth,async(req,res)=>{
+  const [rows]=await pool.execute(`SELECT g.s_index AS id,g.s_barcode AS barcode,g.s_goodname AS name,g.s_unit AS specification
+    FROM goods g LEFT JOIN orderflow_hidden_goods h ON h.goods_id=g.s_index WHERE g.s_barcode=? AND h.goods_id IS NULL ORDER BY g.s_index DESC LIMIT 1`,[req.params.barcode.trim()]);
+  if(!rows[0]) return res.status(404).json({error:'查無此商品條碼'}); res.json(rows[0]);
+});
+app.get('/api/products',requireAuth,requireAdmin,async(req,res)=>{
+  const query=String(req.query.query||'').trim().slice(0,50),params=query?[`%${query}%`,`%${query}%`,`%${query}%`]:[];
+  const where=query?'AND (g.s_barcode LIKE ? OR g.s_goodname LIKE ? OR g.s_unit LIKE ?)':'';
+  const [rows]=await pool.execute(`SELECT g.s_index AS id,g.s_barcode AS barcode,g.s_goodname AS name,g.s_unit AS specification
+    FROM goods g LEFT JOIN orderflow_hidden_goods h ON h.goods_id=g.s_index WHERE h.goods_id IS NULL ${where} ORDER BY g.s_index DESC LIMIT 500`,params); res.json(rows);
+});
+function validateProduct(body) {
+  const barcode=String(body.barcode||'').trim(),name=String(body.name||'').trim(),unit=String(body.specification||'').trim();
+  if(!barcode||barcode.length>20) throw new Error('商品條碼必填且最多20字'); if(!name||name.length>50) throw new Error('商品名稱必填且最多50字');
+  if(unit.length>10) throw new Error('單位最多10字'); return {barcode,name,unit};
 }
-
-app.post('/api/login', async (req, res) => {
-  const username = String(req.body.username || '').trim();
-  const password = String(req.body.password || '');
-  const { rows } = await pool.query('SELECT * FROM users WHERE username = $1 AND active = TRUE', [username]);
-  const user = rows[0];
-  if (!user || !await bcrypt.compare(password, user.password_hash)) return res.status(401).json({ error: '帳號或密碼錯誤' });
-
-  const token = crypto.randomBytes(32).toString('hex');
-  await pool.query('DELETE FROM sessions WHERE expires_at <= NOW()');
-  await pool.query('INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + ($3 * INTERVAL \'1 hour\'))', [token, user.id, sessionHours]);
-  res.setHeader('Set-Cookie', `order_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${sessionHours * 3600}`);
-  res.json({ id:user.id, username:user.username, displayName:user.display_name, role:user.role });
+app.post('/api/products',requireAuth,requireAdmin,async(req,res)=>{
+  try { const p=validateProduct(req.body),[exists]=await pool.execute('SELECT s_index FROM goods WHERE s_barcode=? LIMIT 1',[p.barcode]);
+    if(exists.length) return res.status(409).json({error:'此商品條碼已存在'}); const [result]=await pool.execute('INSERT INTO goods (s_barcode,s_goodname,s_unit) VALUES (?,?,?)',[p.barcode,p.name,p.unit]);
+    res.status(201).json({id:result.insertId,barcode:p.barcode,name:p.name,specification:p.unit}); } catch(error) { res.status(400).json({error:error.message}); }
+});
+app.put('/api/products/:id',requireAuth,requireAdmin,async(req,res)=>{
+  try { const p=validateProduct(req.body),id=Number(req.params.id),[dupe]=await pool.execute('SELECT s_index FROM goods WHERE s_barcode=? AND s_index<>? LIMIT 1',[p.barcode,id]);
+    if(dupe.length) return res.status(409).json({error:'此商品條碼已存在'}); const [result]=await pool.execute('UPDATE goods SET s_barcode=?,s_goodname=?,s_unit=? WHERE s_index=?',[p.barcode,p.name,p.unit,id]);
+    if(!result.affectedRows) return res.status(404).json({error:'查無此商品'}); res.json({id,barcode:p.barcode,name:p.name,specification:p.unit}); } catch(error) { res.status(400).json({error:error.message}); }
+});
+app.delete('/api/products/:id',requireAuth,requireAdmin,async(req,res)=>{
+  const id=Number(req.params.id),[used]=await pool.execute('SELECT 1 FROM detail WHERE s_index=? LIMIT 1',[id]);
+  if(used.length) await pool.execute('INSERT IGNORE INTO orderflow_hidden_goods (goods_id,hidden_by) VALUES (?,?)',[id,req.user.id]); else await pool.execute('DELETE FROM goods WHERE s_index=?',[id]); res.status(204).end();
 });
 
-app.post('/api/logout', requireAuth, async (req, res) => {
-  await pool.query('DELETE FROM sessions WHERE token = $1', [req.sessionToken]);
-  res.setHeader('Set-Cookie', 'order_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
-  res.status(204).end();
-});
-
-app.get('/api/me', requireAuth, (req, res) => res.json(req.user));
-
-app.get('/api/products/:barcode', requireAuth, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, barcode, name, specification FROM products WHERE barcode = $1 AND active = TRUE', [req.params.barcode.trim()]);
-  if (!rows[0]) return res.status(404).json({ error: '查無此商品條碼' });
-  res.json(rows[0]);
-});
-
-app.get('/api/products', requireAuth, requireAdmin, async (req, res) => {
-  const query = String(req.query.query || '').trim().slice(0, 512);
-  const values = query ? [`%${query}%`] : [];
-  const filter = query ? 'AND (barcode ILIKE $1 OR name ILIKE $1 OR specification ILIKE $1)' : '';
-  const { rows } = await pool.query(`SELECT id, barcode, name, specification, created_at AS "createdAt" FROM products WHERE active = TRUE ${filter} ORDER BY id DESC`, values);
+app.get('/api/customers',requireAuth,requireAdmin,async(req,res)=>{
+  const query=String(req.query.query||'').trim().slice(0,64),params=query?[`%${query}%`,`%${query}%`,`%${query}%`,`%${query}%`]:[];
+  const where=query?'WHERE c.c_account LIKE ? OR c.c_name LIKE ? OR c.c_custno LIKE ? OR c.c_id LIKE ?':'';
+  const [rows]=await pool.execute(`SELECT c.c_index AS id,c.c_custno AS customerNo,c.c_account AS account,c.c_name AS name,
+    c.c_tel AS telephone,c.c_id AS taxId,c.c_suspended AS suspended,(a.id IS NOT NULL) AS appPasswordReady
+    FROM customer c LEFT JOIN orderflow_accounts a ON a.customer_id=c.c_index ${where} ORDER BY c.c_index DESC LIMIT 500`,params);
   res.json(rows);
 });
 
-app.post('/api/products', requireAuth, requireAdmin, async (req, res) => {
-  const barcode = String(req.body.barcode || '').trim();
-  const name = String(req.body.name || '').trim();
-  const specification = String(req.body.specification || '').trim();
-  if (!barcode || barcode.length > 512) return res.status(400).json({ error: '請輸入有效商品條碼' });
-  if (!name || name.length > 120) return res.status(400).json({ error: '請輸入商品名稱（最多 120 字）' });
-  if (specification.length > 300) return res.status(400).json({ error: '規格最多 300 字' });
-  try {
-    const { rows } = await pool.query('INSERT INTO products (barcode, name, specification) VALUES ($1, $2, $3) RETURNING id, barcode, name, specification', [barcode, name, specification]);
-    res.status(201).json(rows[0]);
-  } catch (error) {
-    if (error.code === '23505') return res.status(409).json({ error: '此商品條碼已存在，請勿重複新增' });
-    throw error;
-  }
+app.post('/api/customers/:id/reset-password',requireAuth,requireAdmin,async(req,res)=>{
+  const id=Number(req.params.id),password=String(req.body.password||'');
+  if(!Number.isInteger(id)||id<1) return res.status(400).json({error:'客戶編號不正確'});
+  if(password.length<8||password.length>128) return res.status(400).json({error:'新密碼需為8至128字'});
+  const [customers]=await pool.execute('SELECT c_index,c_account,c_name,c_suspended FROM customer WHERE c_index=? LIMIT 1',[id]);
+  if(!customers[0]) return res.status(404).json({error:'查無此客戶'}); const customer=customers[0],hash=await bcrypt.hash(password,12);
+  const [collision]=await pool.execute('SELECT id FROM orderflow_accounts WHERE username=? AND (customer_id IS NULL OR customer_id<>?) LIMIT 1',[customer.c_account,id]);
+  if(collision.length) return res.status(409).json({error:'此客戶帳號與既有系統帳號重複，請先調整舊資料'});
+  await pool.execute(`INSERT INTO orderflow_accounts (username,password_hash,display_name,role,customer_id,active) VALUES (?,?,?,'member',?,?)
+    ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash),display_name=VALUES(display_name),role='member',customer_id=VALUES(customer_id),active=VALUES(active)`,
+    [customer.c_account,hash,customer.c_name,customer.c_index,customer.c_suspended?0:1]);
+  res.json({id,account:customer.c_account,passwordReset:true});
 });
 
-app.put('/api/products/:id', requireAuth, requireAdmin, async (req, res) => {
-  const id = Number(req.params.id);
-  const barcode = String(req.body.barcode || '').trim();
-  const name = String(req.body.name || '').trim();
-  const specification = String(req.body.specification || '').trim();
-  if (!Number.isInteger(id) || id < 1) return res.status(404).json({ error: '查無此商品' });
-  if (!barcode || barcode.length > 512) return res.status(400).json({ error: '請輸入有效商品條碼' });
-  if (!name || name.length > 120) return res.status(400).json({ error: '請輸入商品名稱（最多 120 字）' });
-  if (specification.length > 300) return res.status(400).json({ error: '規格最多 300 字' });
+async function createOrder(user,items) {
+  if(!user.customerId) throw new Error('管理員帳號未綁定客戶，請使用客戶帳號建立訂單'); const clock=getBusinessClock();
+  const [closed]=await pool.execute('SELECT 1 FROM orderflow_daily_closings WHERE business_date=? LIMIT 1',[clock.date]); if(closed.length) throw new Error('今日訂單已結單，無法再新增');
+  const connection=await pool.getConnection(); let orderId;
   try {
-    const { rows } = await pool.query('UPDATE products SET barcode=$1, name=$2, specification=$3 WHERE id=$4 AND active=TRUE RETURNING id, barcode, name, specification', [barcode, name, specification, id]);
-    if (!rows[0]) return res.status(404).json({ error: '查無此商品或商品已刪除' });
-    res.json(rows[0]);
-  } catch (error) {
-    if (error.code === '23505') return res.status(409).json({ error: '此商品條碼已存在，請勿重複使用' });
-    throw error;
-  }
-});
-
-app.delete('/api/products/:id', requireAuth, requireAdmin, async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isInteger(id) || id < 1) return res.status(404).json({ error: '查無此商品' });
-  const result = await pool.query('UPDATE products SET active=FALSE WHERE id=$1 AND active=TRUE', [id]);
-  if (!result.rowCount) return res.status(404).json({ error: '查無此商品或商品已刪除' });
-  res.status(204).end();
-});
-
-async function createOrder(userId, items) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const businessDate = (await client.query("SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD') AS value")).rows[0].value;
-    const datePrefix = businessDate.replaceAll('-', '');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [datePrefix]);
-    const closed = await client.query('SELECT 1 FROM daily_closings WHERE business_date=$1::date', [businessDate]);
-    if (closed.rowCount) throw new Error('今日訂單已結單，無法再新增');
-    const count = Number((await client.query('SELECT COUNT(*) AS count FROM orders WHERE order_number LIKE $1', [`${datePrefix}-%`])).rows[0].count) + 1;
-    const orderNumber = `${datePrefix}-${String(count).padStart(4, '0')}`;
-    const order = (await client.query('INSERT INTO orders (order_number, user_id, business_date) VALUES ($1, $2, $3) RETURNING id', [orderNumber, userId, businessDate])).rows[0];
-
-    for (const item of items) {
-      const product = (await client.query('SELECT * FROM products WHERE barcode=$1 AND active=TRUE', [String(item.barcode)])).rows[0];
-      if (!product) throw new Error(`查無商品：${item.barcode}`);
-      const quantity = Number(item.quantity);
-      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new Error('商品數量不正確');
-      await client.query(`INSERT INTO order_items (order_id, product_id, barcode_snapshot, product_name_snapshot, specification_snapshot, quantity, note) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [order.id, product.id, product.barcode, product.name, product.specification, quantity, String(item.note || '').slice(0, 500)]);
+    const [orderResult]=await connection.execute('INSERT INTO `order` (o_date,o_hour,o_minute,o_seconds,c_index,status) VALUES (?,?,?,?,?,0)',[clock.date,clock.time.slice(0,2),clock.time.slice(3,5),String(new Date().getSeconds()).padStart(2,'0'),user.customerId]); orderId=orderResult.insertId;
+    for(const item of items) {
+      const [products]=await connection.execute(`SELECT g.* FROM goods g LEFT JOIN orderflow_hidden_goods h ON h.goods_id=g.s_index WHERE g.s_barcode=? AND h.goods_id IS NULL ORDER BY g.s_index DESC LIMIT 1`,[String(item.barcode)]);
+      if(!products[0]) throw new Error(`查無商品：${item.barcode}`); const quantity=Number(item.quantity); if(!Number.isInteger(quantity)||quantity<1||quantity>9999) throw new Error('商品數量不正確');
+      await connection.execute('INSERT INTO detail (o_index,s_index,d_date,d_hour,d_minute,d_seconds,c_index,o_quantity,o_note) VALUES (?,?,?,?,?,?,?,?,?)',[orderId,products[0].s_index,clock.date,clock.time.slice(0,2),clock.time.slice(3,5),String(new Date().getSeconds()).padStart(2,'0'),user.customerId,String(quantity),String(item.note||'').slice(0,255)]);
     }
-    await client.query('COMMIT');
-    return { id:Number(order.id), orderNumber };
-  } catch (error) { await client.query('ROLLBACK'); throw error; }
-  finally { client.release(); }
+    return {id:orderId,orderNumber:String(orderId)};
+  } catch(error) { if(orderId){await connection.execute('DELETE FROM detail WHERE o_index=?',[orderId]);await connection.execute('DELETE FROM `order` WHERE o_index=?',[orderId]);} throw error; } finally { connection.release(); }
 }
-
-app.post('/api/orders', requireAuth, async (req, res) => {
-  const items = Array.isArray(req.body.items) ? req.body.items : [];
-  if (!items.length) return res.status(400).json({ error: '訂單至少需要一項商品' });
-  try { res.status(201).json(await createOrder(req.user.id, items)); }
-  catch (error) { res.status(400).json({ error:error.message }); }
+app.post('/api/orders',requireAuth,async(req,res)=>{const items=Array.isArray(req.body.items)?req.body.items:[];if(!items.length)return res.status(400).json({error:'訂單至少需要一項商品'});try{res.status(201).json(await createOrder(req.user,items));}catch(error){res.status(400).json({error:error.message});}});
+app.get('/api/orders',requireAuth,async(req,res)=>{
+  const date=/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date||''))?req.query.date:getBusinessClock().date,memberFilter=req.user.role==='member'?'AND o.c_index=?':'',params=req.user.role==='member'?[date,req.user.customerId]:[date];
+  const [rows]=await pool.execute(`SELECT o.o_index AS id,CAST(o.o_index AS CHAR) AS orderNumber,CONCAT(o.o_date,' ',o.o_hour,':',o.o_minute,':',o.o_seconds) AS createdAt,
+    c.c_name AS memberName,COUNT(d.d_id) AS itemCount,COALESCE(SUM(CAST(d.o_quantity AS UNSIGNED)),0) AS totalQuantity,
+    IF(o.status=1,'closed','created') AS status,(o.status=0 AND o.o_date=CURDATE()) AS editable
+    FROM \`order\` o JOIN customer c ON c.c_index=o.c_index LEFT JOIN detail d ON d.o_index=o.o_index WHERE o.o_date=? ${memberFilter}
+    GROUP BY o.o_index,c.c_name ORDER BY o.o_index DESC`,params); res.json(rows);
+});
+app.get('/api/orders/:id',requireAuth,async(req,res)=>{
+  const memberFilter=req.user.role==='member'?'AND o.c_index=?':'',params=req.user.role==='member'?[req.params.id,req.user.customerId]:[req.params.id];
+  const [rows]=await pool.execute(`SELECT o.o_index AS id,CAST(o.o_index AS CHAR) AS orderNumber,IF(o.status=1,'closed','created') AS status,
+    CONCAT(o.o_date,' ',o.o_hour,':',o.o_minute,':',o.o_seconds) AS createdAt,c.c_name AS memberName FROM \`order\` o JOIN customer c ON c.c_index=o.c_index WHERE o.o_index=? ${memberFilter}`,params);
+  if(!rows[0]) return res.status(404).json({error:'查無訂單'}); const order=rows[0],[items]=await pool.execute(`SELECT g.s_barcode AS barcode,g.s_goodname AS name,g.s_unit AS specification,
+    CAST(d.o_quantity AS UNSIGNED) AS quantity,d.o_note AS note FROM detail d JOIN goods g ON g.s_index=d.s_index WHERE d.o_index=? ORDER BY d.d_id`,[order.id]); order.items=items;res.json(order);
 });
 
-app.get('/api/orders', requireAuth, async (req, res) => {
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Taipei' });
-  const { rows } = await pool.query(`
-    SELECT orders.id, orders.order_number AS "orderNumber", orders.status, orders.created_at AS "createdAt",
-           orders.business_date::text AS "businessDate",
-           (orders.business_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date AND orders.status<>'closed') AS editable,
-           users.display_name AS "memberName", COUNT(order_items.id)::integer AS "itemCount",
-           COALESCE(SUM(order_items.quantity),0)::integer AS "totalQuantity"
-    FROM orders JOIN users ON users.id=orders.user_id LEFT JOIN order_items ON order_items.order_id=orders.id
-    WHERE orders.business_date=$1::date
-    GROUP BY orders.id, users.display_name ORDER BY orders.id DESC
-  `, [date]);
-  res.json(rows);
-});
-
-app.get('/api/orders/:id', requireAuth, async (req, res) => {
-  const { rows } = await pool.query(`SELECT orders.id, orders.order_number AS "orderNumber", orders.status, orders.created_at AS "createdAt", users.display_name AS "memberName" FROM orders JOIN users ON users.id=orders.user_id WHERE orders.id=$1`, [req.params.id]);
-  const order = rows[0];
-  if (!order) return res.status(404).json({ error: '查無訂單' });
-  order.items = (await pool.query(`SELECT barcode_snapshot AS barcode, product_name_snapshot AS name, specification_snapshot AS specification, quantity, note FROM order_items WHERE order_id=$1 ORDER BY id`, [order.id])).rows;
-  res.json(order);
-});
-
-async function exportRows(client, businessDate) {
-  return (await client.query(`
-    SELECT orders.business_date::text AS "businessDate", orders.order_number AS "orderNumber",
-      to_char(orders.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
-      users.display_name AS "memberName", order_items.barcode_snapshot AS barcode,
-      order_items.product_name_snapshot AS "productName", order_items.specification_snapshot AS specification,
-      order_items.quantity, order_items.note, orders.status
-    FROM orders JOIN users ON users.id=orders.user_id
-    JOIN order_items ON order_items.order_id=orders.id
-    WHERE orders.business_date=$1::date ORDER BY orders.id, order_items.id
-  `, [businessDate])).rows;
+async function buildExcel(businessDate,connection=pool,forceClosed=false) {
+  const statusExpression=forceClosed?"'已鎖定'":"IF(o.status=1,'已鎖定','可修改')";
+  const [rows]=await connection.execute(`SELECT o.o_date AS businessDate,o.o_index AS orderNumber,CONCAT(o.o_date,' ',o.o_hour,':',o.o_minute,':',o.o_seconds) AS createdAt,
+    c.c_name AS memberName,g.s_barcode AS barcode,g.s_goodname AS productName,g.s_unit AS unit,CAST(d.o_quantity AS UNSIGNED) AS quantity,d.o_note AS note,
+    ${statusExpression} AS status FROM \`order\` o JOIN customer c ON c.c_index=o.c_index JOIN detail d ON d.o_index=o.o_index JOIN goods g ON g.s_index=d.s_index
+    WHERE o.o_date=? ORDER BY o.o_index,d.d_id`,[businessDate]);
+  return {buffer:createOrdersXlsx(rows,businessDate),orderCount:new Set(rows.map((row)=>String(row.orderNumber))).size,itemCount:rows.length,totalQuantity:rows.reduce((sum,row)=>sum+Number(row.quantity||0),0)};
 }
-
-async function createExport(client, businessDate, exportType, userId = null) {
-  const rows = await exportRows(client, businessDate);
-  const totals = (await client.query(`
-    SELECT COUNT(DISTINCT orders.id)::integer AS "orderCount", COUNT(order_items.id)::integer AS "itemCount",
-      COALESCE(SUM(order_items.quantity),0)::integer AS "totalQuantity"
-    FROM orders LEFT JOIN order_items ON order_items.order_id=orders.id WHERE orders.business_date=$1::date
-  `, [businessDate])).rows[0];
-  const result = await client.query(`
-    INSERT INTO order_exports (business_date, export_type, exported_by, order_count, item_count, total_quantity, csv_content)
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
-    RETURNING id, business_date::text AS "businessDate", export_type AS "exportType", exported_at AS "exportedAt",
-      order_count AS "orderCount", item_count AS "itemCount", total_quantity AS "totalQuantity"
-  `, [businessDate, exportType, userId, totals.orderCount, totals.itemCount, totals.totalQuantity, buildOrdersCsv(rows)]);
-  return result.rows[0];
+async function createExport(businessDate,type,userId=null,connection=pool,forceClosed=false) {
+  const excel=await buildExcel(businessDate,connection,forceClosed),fileName=`orders-${businessDate}.xlsx`,[result]=await connection.execute(`INSERT INTO orderflow_exports (business_date,export_type,exported_by,order_count,item_count,total_quantity,file_name,xlsx_data) VALUES (?,?,?,?,?,?,?,?)`,[businessDate,type,userId,excel.orderCount,excel.itemCount,excel.totalQuantity,fileName,excel.buffer]);
+  return {id:String(result.insertId),businessDate,exportType:type,orderCount:excel.orderCount,itemCount:excel.itemCount,totalQuantity:excel.totalQuantity};
 }
-
-async function closeBusinessDate(businessDate, triggerType = 'automatic', userId = null) {
-  const client = await pool.connect();
+async function closeBusinessDate(businessDate,triggerType='automatic',userId=null) {
+  const connection=await pool.getConnection(),lockName=`orderflow-close-${businessDate}`;
   try {
-    await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`order-close:${businessDate}`]);
-    const existing = (await client.query(`
-      SELECT daily_closings.business_date::text AS "businessDate", daily_closings.closed_at AS "closedAt",
-        daily_closings.trigger_type AS "triggerType", order_exports.id AS "exportId",
-        order_exports.order_count AS "orderCount", order_exports.item_count AS "itemCount",
-        order_exports.total_quantity AS "totalQuantity"
-      FROM daily_closings JOIN order_exports ON order_exports.id=daily_closings.export_id
-      WHERE daily_closings.business_date=$1::date
-    `, [businessDate])).rows[0];
-    if (existing) { await client.query('COMMIT'); return existing; }
-    await client.query("UPDATE orders SET status='closed' WHERE business_date=$1::date", [businessDate]);
-    const exported = await createExport(client, businessDate, triggerType, userId);
-    const closing = (await client.query(`
-      INSERT INTO daily_closings (business_date, trigger_type, closed_by, export_id) VALUES ($1,$2,$3,$4)
-      RETURNING business_date::text AS "businessDate", closed_at AS "closedAt", trigger_type AS "triggerType"
-    `, [businessDate, triggerType, userId, exported.id])).rows[0];
-    await client.query(`UPDATE schedule_settings SET last_closed_date=GREATEST(COALESCE(last_closed_date,$1::date),$1::date) WHERE id=1`, [businessDate]);
-    await client.query('COMMIT');
-    return { ...closing, exportId:exported.id, orderCount:exported.orderCount, itemCount:exported.itemCount, totalQuantity:exported.totalQuantity };
-  } catch (error) { await client.query('ROLLBACK'); throw error; }
-  finally { client.release(); }
+    const [[lock]]=await connection.execute('SELECT GET_LOCK(?,10) AS acquired',[lockName]);if(!lock.acquired)throw new Error('結單作業忙碌中，請稍後再試');
+    const [existing]=await connection.execute(`SELECT c.business_date AS businessDate,c.closed_at AS closedAt,c.trigger_type AS triggerType,e.id AS exportId,e.order_count AS orderCount,e.item_count AS itemCount,e.total_quantity AS totalQuantity FROM orderflow_daily_closings c JOIN orderflow_exports e ON e.id=c.export_id WHERE c.business_date=?`,[businessDate]);if(existing[0])return existing[0];
+    await connection.beginTransaction();
+    const exported=await createExport(businessDate,triggerType,userId,connection,true);
+    await connection.execute('UPDATE `order` SET status=1 WHERE o_date=?',[businessDate]);
+    await connection.execute('INSERT INTO orderflow_daily_closings (business_date,trigger_type,closed_by,export_id) VALUES (?,?,?,?)',[businessDate,triggerType,userId,exported.id]);
+    await connection.execute('UPDATE orderflow_settings SET last_closed_date=IF(last_closed_date IS NULL OR last_closed_date<?,?,last_closed_date) WHERE id=1',[businessDate,businessDate]);
+    await connection.commit();
+    return {...exported,closedAt:new Date().toISOString(),triggerType,exportId:exported.id};
+  } catch(error) { try{await connection.rollback();}catch(_){} throw error; }
+  finally {try{await connection.execute('SELECT RELEASE_LOCK(?)',[lockName]);}catch(_){}connection.release();}
 }
-
+async function scheduleInfo() {
+  const [[timer]]=await pool.query('SELECT hour,minute,seconds,status FROM timer ORDER BY time_id LIMIT 1'),[[setting]]=await pool.query('SELECT enabled,last_closed_date AS lastClosedDate,updated_at AS updatedAt FROM orderflow_settings WHERE id=1');
+  const hour=String(timer?.hour||'24').padStart(2,'0');return {...setting,closeTime:`${hour==='24'?'00':hour}:${String(timer?.minute||'00').padStart(2,'0')}`,timezone:'Asia/Taipei',legacyTimerStatus:timer?.status};
+}
 async function runSchedule() {
-  const setting = (await pool.query('SELECT enabled, close_time AS "closeTime" FROM schedule_settings WHERE id=1')).rows[0];
-  if (!setting?.enabled) return;
-  const now = getBusinessClock();
-  if (now.time < setting.closeTime) return;
-  const targetDate = shiftDate(now.date, -1);
-  const dates = (await pool.query(`
-    SELECT business_date::text AS date FROM orders
-    WHERE business_date < $1::date AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE daily_closings.business_date=orders.business_date)
-    GROUP BY business_date ORDER BY business_date
-  `, [now.date])).rows.map((row) => row.date);
-  if (!dates.includes(targetDate)) dates.push(targetDate);
-  for (const date of dates.sort()) await closeBusinessDate(date);
+  const setting=await scheduleInfo();if(!setting.enabled)return;const now=getBusinessClock();if(now.time<setting.closeTime)return;const target=shiftDate(now.date,-1);
+  await closeBusinessDate(target);
 }
-
-app.get('/api/schedule', requireAuth, requireAdmin, async (_req, res) => {
-  const setting = (await pool.query(`SELECT enabled, close_time AS "closeTime", timezone, last_closed_date::text AS "lastClosedDate", updated_at AS "updatedAt" FROM schedule_settings WHERE id=1`)).rows[0];
-  const { rows } = await pool.query(`
-    SELECT order_exports.id, order_exports.business_date::text AS "businessDate", order_exports.export_type AS "exportType",
-      order_exports.exported_at AS "exportedAt", order_exports.order_count AS "orderCount",
-      order_exports.item_count AS "itemCount", order_exports.total_quantity AS "totalQuantity",
-      (daily_closings.business_date IS NOT NULL) AS "closed"
-    FROM order_exports LEFT JOIN daily_closings ON daily_closings.export_id=order_exports.id
-    ORDER BY order_exports.id DESC LIMIT 30
-  `);
-  res.json({ setting, exports:rows, today:getBusinessClock().date });
-});
-
-app.put('/api/schedule', requireAuth, requireAdmin, async (req, res) => {
-  const enabled = Boolean(req.body.enabled);
-  const closeTime = String(req.body.closeTime || '');
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(closeTime)) return res.status(400).json({ error:'排程時間格式不正確' });
-  const { rows } = await pool.query(`UPDATE schedule_settings SET enabled=$1, close_time=$2, timezone=$3, updated_at=NOW(), updated_by=$4 WHERE id=1 RETURNING enabled, close_time AS "closeTime", timezone, updated_at AS "updatedAt"`, [enabled, closeTime, BUSINESS_TIME_ZONE, req.user.id]);
-  res.json(rows[0]);
-});
-
-app.post('/api/schedule/export', requireAuth, requireAdmin, async (req, res) => {
-  const businessDate = String(req.body.businessDate || '');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) return res.status(400).json({ error:'請選擇匯出日期' });
-  const client = await pool.connect();
-  try { res.status(201).json(await createExport(client, businessDate, 'manual', req.user.id)); }
-  finally { client.release(); }
-});
-
-app.post('/api/schedule/close', requireAuth, requireAdmin, async (req, res) => {
-  const businessDate = String(req.body.businessDate || '');
-  const today = getBusinessClock().date;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate) || businessDate > today) return res.status(400).json({ error:'結單日期不正確' });
-  res.status(201).json(await closeBusinessDate(businessDate, 'manual', req.user.id));
-});
-
-app.get('/api/exports/:id/download', requireAuth, requireAdmin, async (req, res) => {
-  const { rows } = await pool.query('SELECT business_date::text AS "businessDate", csv_content AS content FROM order_exports WHERE id=$1', [req.params.id]);
-  if (!rows[0]) return res.status(404).json({ error:'查無匯出紀錄' });
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="orders-${rows[0].businessDate}.csv"`);
-  res.send(rows[0].content);
-});
-
-app.get('/api/health', async (_req, res) => {
-  await pool.query('SELECT 1');
-  res.json({ ok:true, database:'postgresql' });
-});
-
-app.use((error, _req, res, _next) => {
-  console.error(error);
-  res.status(500).json({ error:'伺服器發生錯誤' });
-});
-
-initializeDatabase().then(() => {
-  app.listen(port, '0.0.0.0', () => console.log(`訂單系統已啟動：http://localhost:${port}`));
-  runSchedule().catch((error) => console.error('排程初始檢查失敗', error));
-  setInterval(() => runSchedule().catch((error) => console.error('排程執行失敗', error)), 30000).unref();
-}).catch((error) => {
-  console.error('資料庫初始化失敗', error);
-  process.exit(1);
-});
+app.get('/api/schedule',requireAuth,requireAdmin,async(_req,res)=>{const setting=await scheduleInfo(),[exports]=await pool.query(`SELECT e.id,e.business_date AS businessDate,e.export_type AS exportType,e.exported_at AS exportedAt,e.order_count AS orderCount,e.item_count AS itemCount,e.total_quantity AS totalQuantity,(c.business_date IS NOT NULL) AS closed FROM orderflow_exports e LEFT JOIN orderflow_daily_closings c ON c.export_id=e.id ORDER BY e.id DESC LIMIT 30`);res.json({setting,exports,today:getBusinessClock().date});});
+app.put('/api/schedule',requireAuth,requireAdmin,async(req,res)=>{const enabled=Boolean(req.body.enabled),closeTime=String(req.body.closeTime||'');if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(closeTime))return res.status(400).json({error:'排程時間格式不正確'});const [hour,minute]=closeTime.split(':');await pool.execute('UPDATE timer SET hour=?,minute=?,seconds=? ORDER BY time_id LIMIT 1',[hour==='00'?'24':hour,minute,'00']);await pool.execute('UPDATE orderflow_settings SET enabled=?,updated_by=? WHERE id=1',[enabled?1:0,req.user.id]);res.json(await scheduleInfo());});
+app.post('/api/schedule/export',requireAuth,requireAdmin,async(req,res)=>{const date=String(req.body.businessDate||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return res.status(400).json({error:'請選擇匯出日期'});res.status(201).json(await createExport(date,'manual',req.user.id));});
+app.post('/api/schedule/close',requireAuth,requireAdmin,async(req,res)=>{const date=String(req.body.businessDate||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>getBusinessClock().date)return res.status(400).json({error:'結單日期不正確'});res.status(201).json(await closeBusinessDate(date,'manual',req.user.id));});
+app.get('/api/exports/:id/download',requireAuth,requireAdmin,async(req,res)=>{const [rows]=await pool.execute('SELECT file_name AS fileName,xlsx_data AS data FROM orderflow_exports WHERE id=?',[req.params.id]);if(!rows[0])return res.status(404).json({error:'查無匯出紀錄'});res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');res.setHeader('Content-Disposition',`attachment; filename="${rows[0].fileName}"`);res.send(rows[0].data);});
+app.get('/api/health',async(_req,res)=>{await pool.query('SELECT 1');res.json({ok:true,database:'mysql',legacySchema:true});});
+app.use((error,_req,res,_next)=>{console.error(error);res.status(500).json({error:'伺服器發生錯誤'});});
+initializeDatabase().then(()=>{app.listen(port,'0.0.0.0',()=>console.log(`訂單系統已啟動：http://localhost:${port}`));runSchedule().catch((error)=>console.error('排程初始檢查失敗',error));setInterval(()=>runSchedule().catch((error)=>console.error('排程執行失敗',error)),30000).unref();}).catch((error)=>{console.error('MySQL初始化失敗',error);process.exit(1);});
