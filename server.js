@@ -122,6 +122,8 @@ async function initializeDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_orders_business_date ON orders(business_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_orders_status_business_date ON orders(status, business_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
     CREATE INDEX IF NOT EXISTS idx_order_exports_business_date ON order_exports(business_date DESC, exported_at DESC);
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
@@ -318,6 +320,120 @@ app.get('/api/orders/:id', requireAuth, async (req, res) => {
   if (!order) return res.status(404).json({ error: '查無訂單' });
   order.items = (await pool.query(`SELECT barcode_snapshot AS barcode, product_name_snapshot AS name, specification_snapshot AS specification, quantity, legacy_quantity AS "originalQuantity", note FROM order_items WHERE order_id=$1 ORDER BY id`, [order.id])).rows;
   res.json(order);
+});
+
+app.get('/api/admin/orders/summary', requireAuth, requireAdmin, async (_req, res) => {
+  const { rows } = await pool.query(`
+    SELECT COUNT(*)::integer AS total,
+      COUNT(*) FILTER (WHERE business_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei')::date)::integer AS "todayTotal",
+      COUNT(*) FILTER (WHERE status='closed')::integer AS closed,
+      COUNT(*) FILTER (WHERE status<>'closed')::integer AS pending,
+      MAX(business_date)::text AS "latestBusinessDate"
+    FROM orders
+  `);
+  res.json(rows[0]);
+});
+
+app.get('/api/admin/orders', requireAuth, requireAdmin, async (req, res) => {
+  const query = String(req.query.query || '').trim().slice(0, 200);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? String(req.query.from) : '';
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? String(req.query.to) : '';
+  const status = ['created', 'closed'].includes(String(req.query.status || '')) ? String(req.query.status) : '';
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(100, Math.max(10, Number.parseInt(req.query.pageSize, 10) || 20));
+  const values = [];
+  const conditions = [];
+  const add = (value) => { values.push(value); return `$${values.length}`; };
+  if (from) conditions.push(`orders.business_date >= ${add(from)}::date`);
+  if (to) conditions.push(`orders.business_date <= ${add(to)}::date`);
+  if (status) conditions.push(`orders.status = ${add(status)}`);
+  if (query) {
+    const placeholder = add(`%${query}%`);
+    conditions.push(`(orders.order_number ILIKE ${placeholder} OR users.display_name ILIKE ${placeholder} OR users.username ILIKE ${placeholder} OR COALESCE(users.customer_code,'') ILIKE ${placeholder})`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const total = Number((await pool.query(`SELECT COUNT(*) AS count FROM orders JOIN users ON users.id=orders.user_id ${where}`, values)).rows[0].count);
+  const offset = (page - 1) * pageSize;
+  const listValues = [...values, pageSize, offset];
+  const { rows } = await pool.query(`
+    SELECT orders.id, orders.order_number AS "orderNumber", orders.business_date::text AS "businessDate",
+      orders.created_at AS "createdAt", orders.status, users.display_name AS "memberName",
+      users.username AS "memberUsername", COALESCE(items.item_count,0)::integer AS "itemCount",
+      COALESCE(items.total_quantity,0)::integer AS "totalQuantity",
+      (orders.status<>'closed' AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE business_date=orders.business_date)) AS editable
+    FROM orders JOIN users ON users.id=orders.user_id
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) AS item_count, COALESCE(SUM(quantity),0) AS total_quantity
+      FROM order_items WHERE order_id=orders.id
+    ) items ON TRUE
+    ${where}
+    ORDER BY orders.business_date DESC, orders.id DESC
+    LIMIT $${values.length + 1} OFFSET $${values.length + 2}
+  `, listValues);
+  res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });
+});
+
+app.get('/api/admin/orders/:id', requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(404).json({ error:'查無訂單' });
+  const { rows } = await pool.query(`
+    SELECT orders.id, orders.order_number AS "orderNumber", orders.business_date::text AS "businessDate",
+      orders.created_at AS "createdAt", orders.status, users.display_name AS "memberName",
+      users.username AS "memberUsername", users.customer_code AS "customerCode", users.phone, users.tax_id AS "taxId",
+      (orders.status<>'closed' AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE business_date=orders.business_date)) AS editable
+    FROM orders JOIN users ON users.id=orders.user_id WHERE orders.id=$1
+  `, [id]);
+  const order = rows[0];
+  if (!order) return res.status(404).json({ error:'查無訂單' });
+  order.items = (await pool.query(`
+    SELECT id, barcode_snapshot AS barcode, product_name_snapshot AS name,
+      specification_snapshot AS specification, quantity, legacy_quantity AS "originalQuantity", note
+    FROM order_items WHERE order_id=$1 ORDER BY id
+  `, [id])).rows;
+  res.json(order);
+});
+
+app.delete('/api/admin/orders/:id/items', requireAuth, requireAdmin, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const itemIds = [...new Set((Array.isArray(req.body.itemIds) ? req.body.itemIds : []).map(Number).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 500);
+  if (!Number.isInteger(orderId) || orderId < 1 || !itemIds.length) return res.status(400).json({ error:'請選擇要刪除的品項' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const order = (await client.query(`
+      SELECT orders.id, orders.status,
+        NOT EXISTS (SELECT 1 FROM daily_closings WHERE business_date=orders.business_date) AS editable
+      FROM orders WHERE orders.id=$1 FOR UPDATE
+    `, [orderId])).rows[0];
+    if (!order) throw Object.assign(new Error('查無訂單'), { statusCode:404 });
+    if (order.status === 'closed' || !order.editable) throw Object.assign(new Error('此訂單已結單，無法刪除品項'), { statusCode:409 });
+    const deleted = await client.query('DELETE FROM order_items WHERE order_id=$1 AND id=ANY($2::bigint[])', [orderId, itemIds]);
+    if (!deleted.rowCount) throw Object.assign(new Error('找不到所選品項'), { statusCode:404 });
+    const remaining = Number((await client.query('SELECT COUNT(*) AS count FROM order_items WHERE order_id=$1', [orderId])).rows[0].count);
+    if (!remaining) await client.query('DELETE FROM orders WHERE id=$1', [orderId]);
+    await client.query('COMMIT');
+    res.json({ deleted:deleted.rowCount, orderDeleted:remaining === 0, remaining });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    res.status(error.statusCode || 500).json({ error:error.statusCode ? error.message : '刪除訂單品項失敗' });
+  } finally { client.release(); }
+});
+
+app.get('/api/admin/orders/:id/export', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT orders.business_date::text AS "businessDate", orders.order_number AS "orderNumber",
+      to_char(orders.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
+      users.display_name AS "memberName", order_items.barcode_snapshot AS barcode,
+      order_items.product_name_snapshot AS "productName", order_items.specification_snapshot AS specification,
+      order_items.quantity, order_items.legacy_quantity AS "originalQuantity", order_items.note, orders.status
+    FROM orders JOIN users ON users.id=orders.user_id
+    JOIN order_items ON order_items.order_id=orders.id
+    WHERE orders.id=$1 ORDER BY order_items.id
+  `, [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error:'查無訂單明細' });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="order-${rows[0].orderNumber}.csv"`);
+  res.send(buildOrdersCsv(rows));
 });
 
 async function exportRows(client, businessDate) {
