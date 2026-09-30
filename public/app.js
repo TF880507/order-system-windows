@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null };
+const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1 };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -103,9 +103,14 @@ async function loadProducts() {
   if (!state.user || state.user.role !== 'admin') return;
   target.innerHTML = '<tr><td colspan="4" class="empty">載入中</td></tr>';
   try {
-    const products = await api(`/api/products?query=${encodeURIComponent($('#product-search').value.trim())}`);
-    state.products = products;
-    target.innerHTML = products.length ? products.map((product) => `<tr><td><b>${escapeHtml(product.name)}</b></td><td>${escapeHtml(product.barcode)}</td><td>${escapeHtml(product.specification || '—')}</td><td class="row-actions"><button class="text-button" data-edit-product="${product.id}" type="button">編輯</button><button class="text-button danger" data-delete-product="${product.id}" type="button">刪除</button></td></tr>`).join('') : '<tr><td colspan="4" class="empty">查無符合的商品</td></tr>';
+    const data = await api(`/api/products?query=${encodeURIComponent($('#product-search').value.trim())}&page=${state.productPage}&pageSize=50`);
+    state.products = data.items;
+    state.productPage = data.page;
+    state.productTotalPages = data.totalPages;
+    target.innerHTML = data.items.length ? data.items.map((product) => `<tr><td><b>${escapeHtml(product.name)}</b></td><td>${escapeHtml(product.barcode)}</td><td>${escapeHtml(product.specification || '—')}</td><td class="row-actions"><button class="text-button" data-edit-product="${product.id}" type="button">編輯</button><button class="text-button danger" data-delete-product="${product.id}" type="button">刪除</button></td></tr>`).join('') : '<tr><td colspan="4" class="empty">查無符合的商品</td></tr>';
+    $('#product-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
+    $('#product-page-prev').disabled = data.page <= 1;
+    $('#product-page-next').disabled = data.page >= data.totalPages;
   } catch (error) { target.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(error.message)}</td></tr>`; }
 }
 
@@ -134,7 +139,7 @@ function clearProductForm() {
 }
 
 function editProduct(id) {
-  const product = state.products.find((item) => item.id === id);
+  const product = state.products.find((item) => Number(item.id) === id);
   if (!product) return;
   state.editingProductId = id;
   $('#product-form-title').textContent = '編輯商品';
@@ -252,14 +257,16 @@ $('#product-clear').addEventListener('click', clearProductForm);
 $('#products-refresh').addEventListener('click', loadProducts);
 $('#product-scan-resume').addEventListener('click', () => productScanner.focus());
 let productSearchTimer;
-$('#product-search').addEventListener('input', () => { clearTimeout(productSearchTimer); productSearchTimer = setTimeout(loadProducts, 180); });
+$('#product-search').addEventListener('input', () => { clearTimeout(productSearchTimer); state.productPage = 1; productSearchTimer = setTimeout(loadProducts, 180); });
+$('#product-page-prev').addEventListener('click', () => { if (state.productPage > 1) { state.productPage -= 1; loadProducts(); } });
+$('#product-page-next').addEventListener('click', () => { if (state.productPage < state.productTotalPages) { state.productPage += 1; loadProducts(); } });
 $('#product-list').addEventListener('click', async (event) => {
   const editButton = event.target.closest('[data-edit-product]');
   if (editButton) return editProduct(Number(editButton.dataset.editProduct));
   const deleteButton = event.target.closest('[data-delete-product]');
   if (!deleteButton) return;
   const id = Number(deleteButton.dataset.deleteProduct);
-  const product = state.products.find((item) => item.id === id);
+  const product = state.products.find((item) => Number(item.id) === id);
   if (!product || !window.confirm(`要刪除「${product.name}」嗎？\n它不會再被掃碼或新增訂單找到，既有訂單會保留。`)) return;
   try {
     await api(`/api/products/${id}`, { method:'DELETE' });

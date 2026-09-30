@@ -24,10 +24,10 @@ function csvCell(value) {
 }
 
 function buildOrdersCsv(rows) {
-  const headings = ['營業日', '訂單編號', '建立時間', '會員', '商品條碼', '商品名稱', '規格', '數量', '備註', '狀態'];
+  const headings = ['營業日', '訂單編號', '建立時間', '會員', '商品條碼', '商品名稱', '規格', '數量', '舊系統原始數量', '備註', '狀態'];
   const body = rows.map((row) => [
     row.businessDate, row.orderNumber, row.createdAt, row.memberName,
-    row.barcode, row.productName, row.specification, row.quantity, row.note, row.status
+    row.barcode, row.productName, row.specification, row.quantity, row.originalQuantity, row.note, row.status
   ].map(csvCell).join(','));
   return `\uFEFF${[headings.join(','), ...body].join('\r\n')}\r\n`;
 }

@@ -27,6 +27,13 @@ async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS legacy_customer_id BIGINT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS customer_code TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS tax_id TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS legacy_password TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_required BOOLEAN NOT NULL DEFAULT FALSE;
+
     CREATE TABLE IF NOT EXISTS products (
       id BIGSERIAL PRIMARY KEY,
       barcode TEXT NOT NULL UNIQUE,
@@ -53,6 +60,22 @@ async function initializeDatabase() {
       specification_snapshot TEXT DEFAULT '',
       quantity INTEGER NOT NULL CHECK (quantity > 0),
       note TEXT DEFAULT ''
+    );
+
+    ALTER TABLE orders ADD COLUMN IF NOT EXISTS legacy_order_id BIGINT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS legacy_detail_id BIGINT;
+    ALTER TABLE order_items ADD COLUMN IF NOT EXISTS legacy_quantity TEXT;
+
+    CREATE TABLE IF NOT EXISTS legacy_product_links (
+      legacy_product_id BIGINT PRIMARY KEY,
+      product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS legacy_import_runs (
+      id BIGSERIAL PRIMARY KEY,
+      source_file TEXT NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      statistics JSONB NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -102,6 +125,9 @@ async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_order_exports_business_date ON order_exports(business_date DESC, exported_at DESC);
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_legacy_customer_id ON users(legacy_customer_id) WHERE legacy_customer_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_legacy_order_id ON orders(legacy_order_id) WHERE legacy_order_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_order_items_legacy_detail_id ON order_items(legacy_detail_id) WHERE legacy_detail_id IS NOT NULL;
   `);
 
   const adminHash = await bcrypt.hash(initialAdminPassword, 12);
@@ -109,7 +135,7 @@ async function initializeDatabase() {
     INSERT INTO users (username, password_hash, display_name, role, active)
     VALUES ('admin', $1, '系統管理員', 'admin', TRUE)
     ON CONFLICT (username) DO UPDATE
-      SET password_hash = EXCLUDED.password_hash, role = 'admin', active = TRUE
+      SET display_name = EXCLUDED.display_name, role = 'admin', active = TRUE
   `, [adminHash]);
 
   const products = [
@@ -184,10 +210,15 @@ app.get('/api/products/:barcode', requireAuth, async (req, res) => {
 
 app.get('/api/products', requireAuth, requireAdmin, async (req, res) => {
   const query = String(req.query.query || '').trim().slice(0, 512);
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(100, Math.max(10, Number.parseInt(req.query.pageSize, 10) || 50));
   const values = query ? [`%${query}%`] : [];
   const filter = query ? 'AND (barcode ILIKE $1 OR name ILIKE $1 OR specification ILIKE $1)' : '';
-  const { rows } = await pool.query(`SELECT id, barcode, name, specification, created_at AS "createdAt" FROM products WHERE active = TRUE ${filter} ORDER BY id DESC`, values);
-  res.json(rows);
+  const total = Number((await pool.query(`SELECT COUNT(*) AS count FROM products WHERE active = TRUE ${filter}`, values)).rows[0].count);
+  const offset = (page - 1) * pageSize;
+  const listValues = [...values, pageSize, offset];
+  const { rows } = await pool.query(`SELECT id, barcode, name, specification, created_at AS "createdAt" FROM products WHERE active = TRUE ${filter} ORDER BY id DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`, listValues);
+  res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });
 });
 
 app.post('/api/products', requireAuth, requireAdmin, async (req, res) => {
@@ -285,7 +316,7 @@ app.get('/api/orders/:id', requireAuth, async (req, res) => {
   const { rows } = await pool.query(`SELECT orders.id, orders.order_number AS "orderNumber", orders.status, orders.created_at AS "createdAt", users.display_name AS "memberName" FROM orders JOIN users ON users.id=orders.user_id WHERE orders.id=$1`, [req.params.id]);
   const order = rows[0];
   if (!order) return res.status(404).json({ error: '查無訂單' });
-  order.items = (await pool.query(`SELECT barcode_snapshot AS barcode, product_name_snapshot AS name, specification_snapshot AS specification, quantity, note FROM order_items WHERE order_id=$1 ORDER BY id`, [order.id])).rows;
+  order.items = (await pool.query(`SELECT barcode_snapshot AS barcode, product_name_snapshot AS name, specification_snapshot AS specification, quantity, legacy_quantity AS "originalQuantity", note FROM order_items WHERE order_id=$1 ORDER BY id`, [order.id])).rows;
   res.json(order);
 });
 
@@ -295,7 +326,7 @@ async function exportRows(client, businessDate) {
       to_char(orders.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
       users.display_name AS "memberName", order_items.barcode_snapshot AS barcode,
       order_items.product_name_snapshot AS "productName", order_items.specification_snapshot AS specification,
-      order_items.quantity, order_items.note, orders.status
+      order_items.quantity, order_items.legacy_quantity AS "originalQuantity", order_items.note, orders.status
     FROM orders JOIN users ON users.id=orders.user_id
     JOIN order_items ON order_items.order_id=orders.id
     WHERE orders.business_date=$1::date ORDER BY orders.id, order_items.id
@@ -354,6 +385,7 @@ async function runSchedule() {
   const dates = (await pool.query(`
     SELECT business_date::text AS date FROM orders
     WHERE business_date < $1::date AND NOT EXISTS (SELECT 1 FROM daily_closings WHERE daily_closings.business_date=orders.business_date)
+      AND status <> 'closed'
     GROUP BY business_date ORDER BY business_date
   `, [now.date])).rows.map((row) => row.date);
   if (!dates.includes(targetDate)) dates.push(targetDate);
