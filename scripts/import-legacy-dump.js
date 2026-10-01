@@ -122,6 +122,20 @@ async function transform(pool, dumpPath, memberPasswordHash, counts) {
     `)).rows);
 
     await client.query(`
+      INSERT INTO users (username, password_hash, display_name, role, active, legacy_password, password_reset_required)
+      SELECT DISTINCT ON (account) account, $1, account, 'admin', TRUE, password, TRUE
+      FROM (
+        SELECT id::bigint AS source_order, account, password FROM legacy_stage_administrators
+        UNION ALL
+        SELECT 1000000000::bigint AS source_order, account, password FROM legacy_stage_roots
+      ) legacy_admins
+      WHERE NULLIF(btrim(account),'') IS NOT NULL
+      ORDER BY account, source_order
+      ON CONFLICT (username) DO UPDATE SET
+        role='admin', active=TRUE, legacy_password=EXCLUDED.legacy_password
+    `, [memberPasswordHash]);
+
+    await client.query(`
       INSERT INTO users (username, password_hash, display_name, role, active, legacy_customer_id, password_reset_required)
       SELECT 'legacy-user-' || source.customer_id, $1, '舊會員 #' || source.customer_id, 'member', FALSE, source.customer_id::bigint, TRUE
       FROM (
@@ -221,6 +235,7 @@ async function transform(pool, dumpPath, memberPasswordHash, counts) {
 
     const statistics = (await client.query(`SELECT
       (SELECT COUNT(*)::integer FROM users WHERE legacy_customer_id IS NOT NULL) AS customers,
+      (SELECT COUNT(*)::integer FROM users WHERE role='admin' AND active) AS administrators,
       (SELECT COUNT(*)::integer FROM legacy_product_links) AS product_links,
       (SELECT COUNT(*)::integer FROM orders WHERE legacy_order_id IS NOT NULL) AS orders,
       (SELECT COUNT(*)::integer FROM order_items WHERE legacy_detail_id IS NOT NULL) AS details,

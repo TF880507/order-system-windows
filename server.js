@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const path = require('path');
 const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, buildOrdersCsv } = require('./schedule');
 const { validateOrderDateRange } = require('./order-range');
+const { matchesLegacyMd5 } = require('./legacy-login');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -200,7 +201,17 @@ app.post('/api/login', async (req, res) => {
   const password = String(req.body.password || '');
   const { rows } = await pool.query('SELECT * FROM users WHERE username = $1 AND active = TRUE', [username]);
   const user = rows[0];
-  if (!user || !await bcrypt.compare(password, user.password_hash)) return res.status(401).json({ error: '帳號或密碼錯誤' });
+  if (!user) return res.status(401).json({ error: '帳號或密碼錯誤' });
+  let passwordMatches = await bcrypt.compare(password, user.password_hash).catch(() => false);
+  if (!passwordMatches && user.role === 'admin' && matchesLegacyMd5(password, user.legacy_password)) {
+    const upgradedHash = await bcrypt.hash(password, 12);
+    await pool.query('UPDATE users SET password_hash=$1, legacy_password=NULL, password_reset_required=FALSE WHERE id=$2', [upgradedHash, user.id]);
+    passwordMatches = true;
+  }
+  if (!passwordMatches) return res.status(401).json({ error: '帳號或密碼錯誤' });
+  if (user.role === 'admin' && user.legacy_password) {
+    await pool.query('UPDATE users SET legacy_password=NULL WHERE id=$1', [user.id]);
+  }
 
   const token = crypto.randomBytes(32).toString('hex');
   await pool.query('DELETE FROM sessions WHERE expires_at <= NOW()');
