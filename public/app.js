@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
+const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -20,6 +20,7 @@ function showPage(name) {
   if (name === 'home') loadOrders('#recent-orders', 5);
   if (name === 'workspace') setTimeout(() => scanner.focus(), 0);
   if (name === 'products') { loadProducts(); setTimeout(() => productScanner.focus(), 0); }
+  if (name === 'vendors') loadVendors();
   if (name === 'schedule') loadSchedule();
   if (name === 'admin-orders') loadAdminOrders();
 }
@@ -55,6 +56,7 @@ function setAuthenticatedUi(user) {
   $('#login-nav').classList.toggle('hidden', Boolean(user));
   const isAdmin = user?.role === 'admin';
   $('#admin-orders-nav').classList.toggle('hidden', !isAdmin);
+  $('#vendors-nav').classList.toggle('hidden', !isAdmin);
   $('#products-nav').classList.toggle('hidden', !isAdmin);
   $('#schedule-nav').classList.toggle('hidden', !isAdmin);
 }
@@ -220,6 +222,34 @@ async function loadProducts() {
     $('#product-page-prev').disabled = data.page <= 1;
     $('#product-page-next').disabled = data.page >= data.totalPages;
   } catch (error) { target.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(error.message)}</td></tr>`; }
+}
+
+async function loadVendors() {
+  const target = $('#vendor-list');
+  if (!state.user || state.user.role !== 'admin') return;
+  target.innerHTML = '<tr><td colspan="8" class="empty">載入中</td></tr>';
+  try {
+    const query = encodeURIComponent($('#vendor-search').value.trim());
+    const data = await api(`/api/admin/vendors?query=${query}&page=${state.vendorPage}&pageSize=50`);
+    state.vendors = data.items;
+    state.vendorPage = data.page;
+    state.vendorTotalPages = data.totalPages;
+    target.innerHTML = data.items.length ? data.items.map((vendor) => `<tr>
+      <td><b>${escapeHtml(vendor.displayName)}</b></td>
+      <td>${escapeHtml(vendor.username)}</td>
+      <td>${escapeHtml(vendor.customerCode || '—')}</td>
+      <td>${escapeHtml(vendor.phone || '—')}</td>
+      <td>${escapeHtml(vendor.taxId || '—')}</td>
+      <td>${Number(vendor.orderCount).toLocaleString()}</td>
+      <td>${escapeHtml(vendor.latestOrderDate || '—')}</td>
+      <td><span class="status-tag${vendor.active ? '' : ' disabled-tag'}">${vendor.active ? '啟用' : '停用'}</span></td>
+    </tr>`).join('') : '<tr><td colspan="8" class="empty">查無符合的廠商</td></tr>';
+    $('#vendor-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
+    $('#vendor-page-prev').disabled = data.page <= 1;
+    $('#vendor-page-next').disabled = data.page >= data.totalPages;
+  } catch (error) {
+    target.innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(error.message)}</td></tr>`;
+  }
 }
 
 async function loadSchedule() {
@@ -458,6 +488,11 @@ let productSearchTimer;
 $('#product-search').addEventListener('input', () => { clearTimeout(productSearchTimer); state.productPage = 1; productSearchTimer = setTimeout(loadProducts, 180); });
 $('#product-page-prev').addEventListener('click', () => { if (state.productPage > 1) { state.productPage -= 1; loadProducts(); } });
 $('#product-page-next').addEventListener('click', () => { if (state.productPage < state.productTotalPages) { state.productPage += 1; loadProducts(); } });
+$('#vendors-refresh').addEventListener('click', loadVendors);
+let vendorSearchTimer;
+$('#vendor-search').addEventListener('input', () => { clearTimeout(vendorSearchTimer); state.vendorPage = 1; vendorSearchTimer = setTimeout(loadVendors, 180); });
+$('#vendor-page-prev').addEventListener('click', () => { if (state.vendorPage > 1) { state.vendorPage -= 1; loadVendors(); } });
+$('#vendor-page-next').addEventListener('click', () => { if (state.vendorPage < state.vendorTotalPages) { state.vendorPage += 1; loadVendors(); } });
 $('#product-list').addEventListener('click', async (event) => {
   const editButton = event.target.closest('[data-edit-product]');
   if (editButton) return editProduct(Number(editButton.dataset.editProduct));

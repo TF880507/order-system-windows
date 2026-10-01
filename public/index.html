@@ -4,18 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#222a40">
-  <title>OrderFlow｜訂單管理系統</title>
+  <title>好市吉App訂購管理系統</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <div class="app-shell">
-    <header class="brand"><span class="brand-mark">OF</span><strong>OrderFlow 訂單系統</strong></header>
+    <header class="brand"><span class="brand-mark">好</span><strong>好市吉App訂購管理系統</strong></header>
     <header class="topbar">
       <span class="scanner-status"><i></i>USB 掃碼輸入</span>
       <span id="user-name" class="user-name"></span>
       <button id="logout-button" class="button secondary hidden" type="button">登出</button>
     </header>
-    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button id="login-nav" data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="admin-orders-nav" class="hidden" data-page="admin-orders" type="button"><span>☷</span>訂單管理</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button><button id="schedule-nav" class="hidden" data-page="schedule" type="button"><span>◷</span>排程與匯出</button></nav></aside>
+    <aside class="sidebar"><nav id="main-nav"><span class="nav-label">主要功能</span><button class="active" data-page="home" type="button"><span>▦</span>首頁</button><button id="login-nav" data-page="login" type="button"><span>♙</span>會員登入</button><button data-page="workspace" type="button"><span>▣</span>訂單工作台</button><button id="admin-orders-nav" class="hidden" data-page="admin-orders" type="button"><span>☷</span>訂單管理</button><button id="vendors-nav" class="hidden" data-page="vendors" type="button"><span>♟</span>廠商列表</button><button id="products-nav" class="hidden" data-page="products" type="button"><span>⊞</span>商品管理</button><button id="schedule-nav" class="hidden" data-page="schedule" type="button"><span>◷</span>排程與匯出</button></nav></aside>
     <main class="content">
       <section id="page-home" class="page active">
         <div class="page-heading"><div><h1>首頁</h1><p>歡迎使用會員訂單管理系統</p></div><button class="button primary" data-go-work="scan" type="button">開始建立訂單</button></div>
@@ -59,6 +59,14 @@
           </section>
           <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><input id="product-search" class="product-search" autocomplete="off" placeholder="搜尋商品名稱、條碼或規格"></div><button id="products-refresh" class="button secondary" type="button">重新整理</button></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>規格</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div><div class="product-pagination"><span id="product-page-info">載入中</span><div><button id="product-page-prev" class="button secondary" type="button">上一頁</button><button id="product-page-next" class="button secondary" type="button">下一頁</button></div></div></section>
         </div>
+      </section>
+      <section id="page-vendors" class="page">
+        <div class="page-heading"><div><h1>廠商列表</h1><p>查看已匯入的門店與客戶帳號資料。</p></div></div>
+        <section class="panel">
+          <div class="panel-heading vendors-heading"><div><h2>廠商資料</h2><input id="vendor-search" class="product-search" autocomplete="off" placeholder="搜尋廠商名稱、帳號、代碼、電話或統編"></div><button id="vendors-refresh" class="button secondary" type="button">重新整理</button></div>
+          <div class="table-scroll"><table><thead><tr><th>廠商名稱</th><th>登入帳號</th><th>客戶代碼</th><th>電話</th><th>統一編號</th><th>訂單數</th><th>最近訂購日</th><th>狀態</th></tr></thead><tbody id="vendor-list"><tr><td colspan="8" class="empty">載入中</td></tr></tbody></table></div>
+          <div class="product-pagination"><span id="vendor-page-info">載入中</span><div><button id="vendor-page-prev" class="button secondary" type="button">上一頁</button><button id="vendor-page-next" class="button secondary" type="button">下一頁</button></div></div>
+        </section>
       </section>
       <section id="page-schedule" class="page">
         <div class="page-heading"><div><h1>排程與匯出</h1><p>每日自動結單、手動匯出與歷史執行紀錄</p></div><span id="schedule-state" class="status-tag">載入中</span></div>

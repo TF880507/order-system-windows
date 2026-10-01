@@ -228,6 +228,36 @@ app.post('/api/logout', requireAuth, async (req, res) => {
 
 app.get('/api/me', requireAuth, (req, res) => res.json(req.user));
 
+app.get('/api/admin/vendors', requireAuth, requireAdmin, async (req, res) => {
+  const query = String(req.query.query || '').trim().slice(0, 200);
+  const { page, pageSize, offset } = parsePagination(req);
+  const values = query ? [`%${query}%`] : [];
+  const filter = query ? `AND (
+    users.display_name ILIKE $1 OR users.username ILIKE $1 OR
+    COALESCE(users.customer_code, '') ILIKE $1 OR COALESCE(users.phone, '') ILIKE $1 OR
+    COALESCE(users.tax_id, '') ILIKE $1
+  )` : '';
+  const total = Number((await pool.query(`
+    SELECT COUNT(*) AS count FROM users WHERE role='member' ${filter}
+  `, values)).rows[0].count);
+  const listValues = [...values, pageSize, offset];
+  const { rows } = await pool.query(`
+    SELECT users.id, users.username, users.display_name AS "displayName",
+      users.customer_code AS "customerCode", users.phone, users.tax_id AS "taxId", users.active,
+      COALESCE(order_stats.order_count, 0)::integer AS "orderCount",
+      order_stats.latest_order_date::text AS "latestOrderDate"
+    FROM users
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) AS order_count, MAX(business_date) AS latest_order_date
+      FROM orders WHERE orders.user_id=users.id
+    ) order_stats ON TRUE
+    WHERE users.role='member' ${filter}
+    ORDER BY users.display_name, users.id
+    LIMIT $${values.length + 1} OFFSET $${values.length + 2}
+  `, listValues);
+  res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });
+});
+
 app.get('/api/products/:barcode', requireAuth, async (req, res) => {
   const { rows } = await pool.query('SELECT id, barcode, name, specification FROM products WHERE barcode = $1 AND active = TRUE', [req.params.barcode.trim()]);
   if (!rows[0]) return res.status(404).json({ error: '查無此商品條碼' });
