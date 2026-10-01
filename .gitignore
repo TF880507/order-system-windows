@@ -8,3 +8,6 @@ npm-debug.log*
 imports/*.sql
 local-server.*.log
 .local-pg/
+android-apk/build/
+android-apk/signing/
+android-apk/*.apk

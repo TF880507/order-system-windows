@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
-const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, buildOrdersCsv } = require('./schedule');
+const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell, buildOrdersCsv } = require('./schedule');
 const { validateOrderDateRange } = require('./order-range');
 const { matchesLegacyMd5 } = require('./legacy-login');
 
@@ -257,6 +257,43 @@ app.get('/api/admin/vendors', requireAuth, requireAdmin, async (req, res) => {
     LIMIT $${values.length + 1} OFFSET $${values.length + 2}
   `, listValues);
   res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });
+});
+
+app.get('/api/admin/vendors/export', requireAuth, requireAdmin, async (_req, res) => {
+  const { rows } = await pool.query(`
+    SELECT users.display_name AS "displayName", users.username,
+      users.customer_code AS "customerCode", users.phone, users.tax_id AS "taxId", users.active,
+      COALESCE(order_stats.order_count, 0)::integer AS "orderCount",
+      order_stats.latest_order_date::text AS "latestOrderDate"
+    FROM users
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) AS order_count, MAX(business_date) AS latest_order_date
+      FROM orders WHERE orders.user_id=users.id
+    ) order_stats ON TRUE
+    WHERE users.role='member'
+    ORDER BY users.display_name, users.id
+  `);
+  const csvRows = [
+    ['廠商名稱', '登入帳號', '客戶代碼', '電話', '統一編號', '訂單數', '最近訂購日', '狀態'],
+    ...rows.map((vendor) => [vendor.displayName, vendor.username, vendor.customerCode, vendor.phone, vendor.taxId, vendor.orderCount, vendor.latestOrderDate, vendor.active ? '啟用' : '停用'])
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="vendors.csv"');
+  res.send(`\uFEFF${csvRows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`);
+});
+
+app.get('/api/admin/products/export', requireAuth, requireAdmin, async (_req, res) => {
+  const { rows } = await pool.query(`
+    SELECT barcode, name, specification, active, created_at AS "createdAt"
+    FROM products ORDER BY active DESC, name, id
+  `);
+  const csvRows = [
+    ['商品條碼', '商品名稱', '規格／備註', '狀態', '建檔時間'],
+    ...rows.map((product) => [product.barcode, product.name, product.specification, product.active ? '啟用' : '已刪除', product.createdAt?.toISOString?.() || product.createdAt])
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="products.csv"');
+  res.send(`\uFEFF${csvRows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`);
 });
 
 app.get('/api/products/:barcode', requireAuth, async (req, res) => {
