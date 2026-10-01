@@ -124,6 +124,7 @@ async function initializeDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_orders_business_date ON orders(business_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_orders_user_id_business_date ON orders(user_id, business_date DESC);
     CREATE INDEX IF NOT EXISTS idx_orders_status_business_date ON orders(status, business_date DESC);
     CREATE INDEX IF NOT EXISTS idx_users_display_name ON users(display_name);
     CREATE INDEX IF NOT EXISTS idx_order_exports_business_date ON order_exports(business_date DESC, exported_at DESC);
