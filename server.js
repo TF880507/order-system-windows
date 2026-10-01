@@ -412,6 +412,7 @@ app.post('/api/admin/vendors/import', requireAuth, requireAdmin,
     const client = await pool.connect();
     let inserted = 0;
     let updated = 0;
+    let defaultPasswordCount = 0;
     try {
       await client.query('BEGIN');
       const defaultHash = await bcrypt.hash('000000', 12);
@@ -433,10 +434,11 @@ app.post('/api/admin/vendors/import', requireAuth, requireAdmin,
             VALUES ($1,$2,$3,'member',TRUE,$4,$5,$6,$7)
           `, [vendor.username, passwordHash || defaultHash, vendor.displayName, vendor.customerCode, vendor.phone, vendor.taxId, !vendor.password]);
           inserted += 1;
+          if (!vendor.password) defaultPasswordCount += 1;
         }
       }
       await client.query('COMMIT');
-      res.json({ total:parsed.length, inserted, updated, defaultPasswordCount:parsed.filter((item) => !item.password).length });
+      res.json({ total:parsed.length, inserted, updated, defaultPasswordCount });
     } catch (error) {
       await client.query('ROLLBACK');
       if (error.code === '23505') return res.status(409).json({ error:'匯入資料有重複帳號，請檢查檔案' });
