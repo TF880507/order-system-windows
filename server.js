@@ -259,6 +259,87 @@ app.get('/api/admin/vendors', requireAuth, requireAdmin, async (req, res) => {
   res.json({ items:rows, total, page, pageSize, totalPages:Math.max(1, Math.ceil(total / pageSize)) });
 });
 
+function readVendorPayload(body, requirePassword = false) {
+  const username = String(body.username || '').trim();
+  const password = String(body.password || '');
+  const displayName = String(body.displayName || '').trim();
+  const customerCode = String(body.customerCode || '').trim();
+  const phone = String(body.phone || '').trim();
+  const taxId = String(body.taxId || '').trim();
+  if (!username || username.length > 120 || /\s/.test(username)) return { error:'登入帳號必填、不可包含空白，且最多 120 字' };
+  if ((requirePassword || password) && (password.length < 6 || password.length > 200)) return { error:'密碼須為 6 至 200 個字元' };
+  if (!displayName || displayName.length > 120) return { error:'廠商名稱必填，且最多 120 字' };
+  if (!customerCode || customerCode.length > 80) return { error:'客戶代碼必填，且最多 80 字' };
+  if (phone.length > 80) return { error:'電話最多 80 字' };
+  if (!taxId || taxId.length > 80) return { error:'統一編號必填，且最多 80 字' };
+  return { username, password, displayName, customerCode, phone, taxId };
+}
+
+app.post('/api/admin/vendors', requireAuth, requireAdmin, async (req, res) => {
+  const vendor = readVendorPayload(req.body, true);
+  if (vendor.error) return res.status(400).json({ error:vendor.error });
+  const passwordHash = await bcrypt.hash(vendor.password, 12);
+  try {
+    const { rows } = await pool.query(`
+      INSERT INTO users (username, password_hash, display_name, role, active, customer_code, phone, tax_id, legacy_password, password_reset_required)
+      VALUES ($1,$2,$3,'member',TRUE,$4,$5,$6,NULL,FALSE)
+      RETURNING id, username, display_name AS "displayName", customer_code AS "customerCode", phone, tax_id AS "taxId", active
+    `, [vendor.username, passwordHash, vendor.displayName, vendor.customerCode, vendor.phone, vendor.taxId]);
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error:'此登入帳號已存在，請使用其他帳號' });
+    throw error;
+  }
+});
+
+app.put('/api/admin/vendors/:id', requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(404).json({ error:'查無此廠商' });
+  const vendor = readVendorPayload(req.body);
+  if (vendor.error) return res.status(400).json({ error:vendor.error });
+  const passwordHash = vendor.password ? await bcrypt.hash(vendor.password, 12) : null;
+  try {
+    const { rows } = await pool.query(`
+      UPDATE users SET username=$1, display_name=$2, customer_code=$3, phone=$4, tax_id=$5,
+        password_hash=COALESCE($6, password_hash),
+        legacy_password=CASE WHEN $6::text IS NULL THEN legacy_password ELSE NULL END,
+        password_reset_required=CASE WHEN $6::text IS NULL THEN password_reset_required ELSE FALSE END
+      WHERE id=$7 AND role='member'
+      RETURNING id, username, display_name AS "displayName", customer_code AS "customerCode", phone, tax_id AS "taxId", active
+    `, [vendor.username, vendor.displayName, vendor.customerCode, vendor.phone, vendor.taxId, passwordHash, id]);
+    if (!rows[0]) return res.status(404).json({ error:'查無此廠商' });
+    res.json(rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error:'此登入帳號已存在，請使用其他帳號' });
+    throw error;
+  }
+});
+
+app.patch('/api/admin/vendors/:id/status', requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const active = req.body.active;
+  if (!Number.isInteger(id) || id < 1) return res.status(404).json({ error:'查無此廠商' });
+  if (typeof active !== 'boolean') return res.status(400).json({ error:'帳號狀態不正確' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`
+      UPDATE users SET active=$1 WHERE id=$2 AND role='member'
+      RETURNING id, username, display_name AS "displayName", active
+    `, [active, id]);
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error:'查無此廠商' });
+    }
+    if (!active) await client.query('DELETE FROM sessions WHERE user_id=$1', [id]);
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
+});
+
 app.get('/api/admin/vendors/export', requireAuth, requireAdmin, async (_req, res) => {
   const { rows } = await pool.query(`
     SELECT users.display_name AS "displayName", users.username,

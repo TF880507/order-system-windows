@@ -61,10 +61,23 @@
         </div>
       </section>
       <section id="page-vendors" class="page">
-        <div class="page-heading"><div><h1>廠商列表</h1><p>查看已匯入的門店與客戶帳號資料。</p></div></div>
+        <div class="page-heading"><div><h1>廠商列表</h1><p>新增、修改、停權廠商帳號，並查看各廠商訂單。</p></div><button id="vendor-create" class="button primary" type="button">新增廠商</button></div>
+        <section id="vendor-editor" class="panel vendor-editor hidden">
+          <div class="panel-heading"><h2 id="vendor-form-title">新增廠商</h2><button id="vendor-editor-close" class="icon-button" type="button" aria-label="關閉">×</button></div>
+          <form id="vendor-form" class="vendor-form-grid">
+            <label>客戶代碼<input id="vendor-customer-code" maxlength="80" placeholder="例如：6439A" required></label>
+            <label>廠商名稱<input id="vendor-display-name" maxlength="120" placeholder="請輸入廠商名稱" required></label>
+            <label>統一編號<input id="vendor-tax-id" maxlength="80" inputmode="numeric" placeholder="請輸入統一編號" required></label>
+            <label>登入帳號<input id="vendor-username" maxlength="120" autocomplete="off" placeholder="廠商登入帳號" required></label>
+            <label>登入密碼<input id="vendor-password" type="password" minlength="6" maxlength="200" autocomplete="new-password" placeholder="新增時必填，編輯留空則不修改"></label>
+            <label>電話<input id="vendor-phone" maxlength="80" inputmode="tel" placeholder="選填"></label>
+            <p id="vendor-message" class="message hidden"></p>
+            <div class="form-actions vendor-form-actions"><button id="vendor-cancel" class="button secondary" type="button">取消</button><button id="vendor-save" class="button primary" type="submit">儲存廠商</button></div>
+          </form>
+        </section>
         <section class="panel">
           <div class="panel-heading vendors-heading"><div><h2>廠商資料</h2><input id="vendor-search" class="product-search" autocomplete="off" placeholder="搜尋廠商名稱、帳號、代碼、電話或統編"></div><div class="heading-actions"><a class="button secondary download-link" href="./api/admin/vendors/export">匯出廠商 CSV</a><button id="vendors-refresh" class="button secondary" type="button">重新整理</button></div></div>
-          <div class="table-scroll"><table><thead><tr><th>廠商名稱</th><th>登入帳號</th><th>客戶代碼</th><th>電話</th><th>統一編號</th><th>訂單數</th><th>最近訂購日</th><th>狀態</th></tr></thead><tbody id="vendor-list"><tr><td colspan="8" class="empty">載入中</td></tr></tbody></table></div>
+          <div class="table-scroll"><table><thead><tr><th>廠商名稱</th><th>登入帳號</th><th>客戶代碼</th><th>電話</th><th>統一編號</th><th>訂單數</th><th>最近訂購日</th><th>狀態</th><th>操作</th></tr></thead><tbody id="vendor-list"><tr><td colspan="9" class="empty">載入中</td></tr></tbody></table></div>
           <div class="product-pagination"><span id="vendor-page-info">載入中</span><div><button id="vendor-page-prev" class="button secondary" type="button">上一頁</button><button id="vendor-page-next" class="button secondary" type="button">下一頁</button></div></div>
         </section>
       </section>

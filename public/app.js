@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
+const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], editingVendorId:null, vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -227,7 +227,7 @@ async function loadProducts() {
 async function loadVendors() {
   const target = $('#vendor-list');
   if (!state.user || state.user.role !== 'admin') return;
-  target.innerHTML = '<tr><td colspan="8" class="empty">載入中</td></tr>';
+  target.innerHTML = '<tr><td colspan="9" class="empty">載入中</td></tr>';
   try {
     const query = encodeURIComponent($('#vendor-search').value.trim());
     const data = await api(`/api/admin/vendors?query=${query}&page=${state.vendorPage}&pageSize=50`);
@@ -243,13 +243,40 @@ async function loadVendors() {
       <td>${Number(vendor.orderCount).toLocaleString()}</td>
       <td>${escapeHtml(vendor.latestOrderDate || '—')}</td>
       <td><span class="status-tag${vendor.active ? '' : ' disabled-tag'}">${vendor.active ? '啟用' : '停用'}</span></td>
-    </tr>`).join('') : '<tr><td colspan="8" class="empty">查無符合的廠商</td></tr>';
+      <td class="row-actions"><button class="text-button" data-vendor-orders="${vendor.id}" type="button">訂單</button><button class="text-button" data-edit-vendor="${vendor.id}" type="button">修改</button><button class="text-button${vendor.active ? ' danger' : ''}" data-toggle-vendor="${vendor.id}" type="button">${vendor.active ? '停權' : '復權'}</button></td>
+    </tr>`).join('') : '<tr><td colspan="9" class="empty">查無符合的廠商</td></tr>';
     $('#vendor-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
     $('#vendor-page-prev').disabled = data.page <= 1;
     $('#vendor-page-next').disabled = data.page >= data.totalPages;
   } catch (error) {
-    target.innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(error.message)}</td></tr>`;
+    target.innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(error.message)}</td></tr>`;
   }
+}
+
+function closeVendorEditor() {
+  $('#vendor-form').reset();
+  $('#vendor-editor').classList.add('hidden');
+  state.editingVendorId = null;
+  clearMessage('#vendor-message');
+}
+
+function openVendorEditor(vendor = null) {
+  $('#vendor-form').reset();
+  state.editingVendorId = vendor ? Number(vendor.id) : null;
+  $('#vendor-form-title').textContent = vendor ? '修改廠商' : '新增廠商';
+  $('#vendor-save').textContent = vendor ? '儲存修改' : '新增廠商';
+  $('#vendor-password').required = !vendor;
+  if (vendor) {
+    $('#vendor-customer-code').value = vendor.customerCode || '';
+    $('#vendor-display-name').value = vendor.displayName || '';
+    $('#vendor-tax-id').value = vendor.taxId || '';
+    $('#vendor-username').value = vendor.username || '';
+    $('#vendor-phone').value = vendor.phone || '';
+  }
+  clearMessage('#vendor-message');
+  $('#vendor-editor').classList.remove('hidden');
+  $('#vendor-editor').scrollIntoView({ behavior:'smooth', block:'start' });
+  setTimeout(() => $('#vendor-customer-code').focus(), 150);
 }
 
 async function loadSchedule() {
@@ -493,6 +520,59 @@ let vendorSearchTimer;
 $('#vendor-search').addEventListener('input', () => { clearTimeout(vendorSearchTimer); state.vendorPage = 1; vendorSearchTimer = setTimeout(loadVendors, 180); });
 $('#vendor-page-prev').addEventListener('click', () => { if (state.vendorPage > 1) { state.vendorPage -= 1; loadVendors(); } });
 $('#vendor-page-next').addEventListener('click', () => { if (state.vendorPage < state.vendorTotalPages) { state.vendorPage += 1; loadVendors(); } });
+$('#vendor-create').addEventListener('click', () => openVendorEditor());
+$('#vendor-editor-close').addEventListener('click', closeVendorEditor);
+$('#vendor-cancel').addEventListener('click', closeVendorEditor);
+$('#vendor-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  clearMessage('#vendor-message');
+  const editing = state.editingVendorId;
+  const payload = {
+    customerCode:$('#vendor-customer-code').value,
+    displayName:$('#vendor-display-name').value,
+    taxId:$('#vendor-tax-id').value,
+    username:$('#vendor-username').value,
+    password:$('#vendor-password').value,
+    phone:$('#vendor-phone').value
+  };
+  try {
+    const vendor = await api(editing ? `/api/admin/vendors/${editing}` : '/api/admin/vendors', {
+      method:editing ? 'PUT' : 'POST', body:JSON.stringify(payload)
+    });
+    showToast(`廠商「${vendor.displayName}」已${editing ? '更新' : '建立'}`);
+    closeVendorEditor();
+    state.vendorPage = 1;
+    loadVendors();
+  } catch (error) { showMessage('#vendor-message', error.message); }
+});
+$('#vendor-list').addEventListener('click', async (event) => {
+  const ordersButton = event.target.closest('[data-vendor-orders]');
+  if (ordersButton) {
+    const vendor = state.vendors.find((item) => Number(item.id) === Number(ordersButton.dataset.vendorOrders));
+    if (!vendor) return;
+    $('#admin-order-query').value = vendor.username;
+    state.adminOrderPage = 1;
+    showPage('admin-orders');
+    return;
+  }
+  const editButton = event.target.closest('[data-edit-vendor]');
+  if (editButton) {
+    const vendor = state.vendors.find((item) => Number(item.id) === Number(editButton.dataset.editVendor));
+    if (vendor) openVendorEditor(vendor);
+    return;
+  }
+  const statusButton = event.target.closest('[data-toggle-vendor]');
+  if (!statusButton) return;
+  const vendor = state.vendors.find((item) => Number(item.id) === Number(statusButton.dataset.toggleVendor));
+  if (!vendor) return;
+  const nextActive = !vendor.active;
+  if (!window.confirm(`確定要${nextActive ? '恢復' : '停用'}「${vendor.displayName}」的登入權限嗎？`)) return;
+  try {
+    await api(`/api/admin/vendors/${vendor.id}/status`, { method:'PATCH', body:JSON.stringify({ active:nextActive }) });
+    showToast(`廠商「${vendor.displayName}」已${nextActive ? '復權' : '停權'}`);
+    loadVendors();
+  } catch (error) { showToast(error.message); }
+});
 $('#product-list').addEventListener('click', async (event) => {
   const editButton = event.target.closest('[data-edit-product]');
   if (editButton) return editProduct(Number(editButton.dataset.editProduct));
