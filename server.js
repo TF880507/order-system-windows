@@ -3,6 +3,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
+const XLSX = require('xlsx');
 const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell, buildOrdersCsv } = require('./schedule');
 const { validateOrderDateRange } = require('./order-range');
 const { matchesLegacyMd5 } = require('./legacy-login');
@@ -363,6 +364,87 @@ app.get('/api/admin/vendors/export', requireAuth, requireAdmin, async (_req, res
   res.send(`\uFEFF${csvRows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`);
 });
 
+app.get('/api/admin/vendors/import-template', requireAuth, requireAdmin, (_req, res) => {
+  const rows = [
+    ['客戶代碼', '廠商名稱', '電話', '統一編號', '登入帳號', '登入密碼'],
+    ['6439A', '範例廠商（請刪除此列）', '02-1234-5678', '12345678', 'vendor001', '000000']
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="vendor-import-template.csv"');
+  res.send(`\uFEFF${rows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`);
+});
+
+function importCell(row, aliases) {
+  for (const [key, value] of Object.entries(row)) {
+    const normalized = String(key).replace(/^\uFEFF/, '').replace(/[\s　]/g, '').replace(/[（(].*?[）)]/g, '');
+    if (aliases.includes(normalized)) return String(value ?? '').trim();
+  }
+  return '';
+}
+
+app.post('/api/admin/vendors/import', requireAuth, requireAdmin,
+  express.raw({ type:'application/octet-stream', limit:'3mb' }), async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error:'請選擇要匯入的 CSV、XLS 或 XLSX 檔案' });
+    let records;
+    try {
+      const workbook = XLSX.read(req.body, { type:'buffer', raw:false, cellDates:false });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      records = XLSX.utils.sheet_to_json(sheet, { defval:'', raw:false });
+    } catch (_error) {
+      return res.status(400).json({ error:'檔案格式無法解析，請使用範本 CSV、XLS 或 XLSX' });
+    }
+    if (!records.length) return res.status(400).json({ error:'匯入檔案沒有資料' });
+    if (records.length > 2000) return res.status(400).json({ error:'單次最多匯入 2,000 筆廠商' });
+
+    const parsed = records.map((row, index) => {
+      const customerCode = importCell(row, ['客戶代碼', '廠商序號', '客戶序號']);
+      const displayName = importCell(row, ['廠商名稱', '客戶名稱', '客戶姓名']);
+      const phone = importCell(row, ['電話', '電話號碼']);
+      const taxId = importCell(row, ['統一編號', '統編']);
+      const username = importCell(row, ['登入帳號', '帳號']) || taxId;
+      const password = importCell(row, ['登入密碼', '密碼']);
+      const error = !customerCode ? '缺少客戶代碼' : !displayName ? '缺少廠商名稱' : !taxId ? '缺少統一編號' : !username ? '缺少登入帳號' : password && password.length < 6 ? '登入密碼至少需要 6 個字元' : '';
+      return { row:index + 2, customerCode, displayName, phone, taxId, username, password, error };
+    });
+    const invalid = parsed.filter((item) => item.error);
+    if (invalid.length) return res.status(400).json({ error:`第 ${invalid[0].row} 列${invalid[0].error}；請修正後重新匯入` });
+
+    const client = await pool.connect();
+    let inserted = 0;
+    let updated = 0;
+    try {
+      await client.query('BEGIN');
+      const defaultHash = await bcrypt.hash('000000', 12);
+      for (const vendor of parsed) {
+        const existing = (await client.query('SELECT id, role FROM users WHERE username=$1 FOR UPDATE', [vendor.username])).rows[0];
+        if (existing?.role === 'admin') throw Object.assign(new Error(`第 ${vendor.row} 列的帳號屬於管理員，不能覆蓋`), { statusCode:409 });
+        const passwordHash = vendor.password ? await bcrypt.hash(vendor.password, 12) : null;
+        if (existing) {
+          await client.query(`
+            UPDATE users SET display_name=$1, customer_code=$2, phone=$3, tax_id=$4, active=TRUE,
+              password_hash=COALESCE($5,password_hash), legacy_password=CASE WHEN $5::text IS NULL THEN legacy_password ELSE NULL END,
+              password_reset_required=CASE WHEN $5::text IS NULL THEN password_reset_required ELSE FALSE END
+            WHERE id=$6
+          `, [vendor.displayName, vendor.customerCode, vendor.phone, vendor.taxId, passwordHash, existing.id]);
+          updated += 1;
+        } else {
+          await client.query(`
+            INSERT INTO users (username,password_hash,display_name,role,active,customer_code,phone,tax_id,password_reset_required)
+            VALUES ($1,$2,$3,'member',TRUE,$4,$5,$6,$7)
+          `, [vendor.username, passwordHash || defaultHash, vendor.displayName, vendor.customerCode, vendor.phone, vendor.taxId, !vendor.password]);
+          inserted += 1;
+        }
+      }
+      await client.query('COMMIT');
+      res.json({ total:parsed.length, inserted, updated, defaultPasswordCount:parsed.filter((item) => !item.password).length });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error.code === '23505') return res.status(409).json({ error:'匯入資料有重複帳號，請檢查檔案' });
+      if (error.statusCode) return res.status(error.statusCode).json({ error:error.message });
+      throw error;
+    } finally { client.release(); }
+  });
+
 app.get('/api/admin/products/export', requireAuth, requireAdmin, async (_req, res) => {
   const { rows } = await pool.query(`
     SELECT barcode, name, specification, active, created_at AS "createdAt"
@@ -385,10 +467,11 @@ app.get('/api/products/:barcode', requireAuth, async (req, res) => {
 
 app.get('/api/products', requireAuth, requireAdmin, async (req, res) => {
   const query = String(req.query.query || '').trim().slice(0, 512);
+  const queryField = ['barcode', 'name'].includes(String(req.query.queryField || '')) ? String(req.query.queryField) : 'all';
   const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(100, Math.max(10, Number.parseInt(req.query.pageSize, 10) || 50));
   const values = query ? [`%${query}%`] : [];
-  const filter = query ? 'AND (barcode ILIKE $1 OR name ILIKE $1 OR specification ILIKE $1)' : '';
+  const filter = query ? (queryField === 'barcode' ? 'AND barcode ILIKE $1' : queryField === 'name' ? 'AND name ILIKE $1' : 'AND (barcode ILIKE $1 OR name ILIKE $1 OR specification ILIKE $1)') : '';
   const total = Number((await pool.query(`SELECT COUNT(*) AS count FROM products WHERE active = TRUE ${filter}`, values)).rows[0].count);
   const offset = (page - 1) * pageSize;
   const listValues = [...values, pageSize, offset];
@@ -624,6 +707,7 @@ app.get('/api/admin/orders/summary', requireAuth, requireAdmin, async (_req, res
 
 app.get('/api/admin/orders', requireAuth, requireAdmin, async (req, res) => {
   const query = String(req.query.query || '').trim().slice(0, 200);
+  const queryField = ['order', 'vendor'].includes(String(req.query.queryField || '')) ? String(req.query.queryField) : 'all';
   const from = String(req.query.from || '');
   const to = String(req.query.to || '');
   const status = ['created', 'closed'].includes(String(req.query.status || '')) ? String(req.query.status) : '';
@@ -644,7 +728,9 @@ app.get('/api/admin/orders', requireAuth, requireAdmin, async (req, res) => {
   if (status) conditions.push(`orders.status = ${add(status)}`);
   if (query) {
     const placeholder = add(`%${query}%`);
-    conditions.push(`(orders.order_number ILIKE ${placeholder} OR users.display_name ILIKE ${placeholder} OR users.username ILIKE ${placeholder} OR COALESCE(users.customer_code,'') ILIKE ${placeholder})`);
+    if (queryField === 'order') conditions.push(`orders.order_number ILIKE ${placeholder}`);
+    else if (queryField === 'vendor') conditions.push(`(users.display_name ILIKE ${placeholder} OR users.username ILIKE ${placeholder} OR COALESCE(users.customer_code,'') ILIKE ${placeholder})`);
+    else conditions.push(`(orders.order_number ILIKE ${placeholder} OR users.display_name ILIKE ${placeholder} OR users.username ILIKE ${placeholder} OR COALESCE(users.customer_code,'') ILIKE ${placeholder})`);
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const total = Number((await pool.query(`SELECT COUNT(*) AS count FROM orders JOIN users ON users.id=orders.user_id ${where}`, values)).rows[0].count);
