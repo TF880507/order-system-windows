@@ -9,12 +9,14 @@ const { validateOrderDateRange } = require('./order-range');
 const { matchesLegacyMd5 } = require('./legacy-login');
 const { MAX_PRODUCT_IMPORT_ROWS, createProductTemplateBuffer, createProductsExportBuffer, parseProductImportBuffer } = require('./product-spreadsheet');
 const { barcodeCandidates } = require('./barcode-lookup');
+const { createCaptchaAnswer, hashCaptcha, captchaMatches, buildCaptchaSvg, captchaDataUrl } = require('./captcha');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const sessionHours = Number(process.env.SESSION_HOURS || 12);
 const initialAdminPassword = process.env.ADMIN_PASSWORD || 'test123';
 const databaseUrl = process.env.DATABASE_URL || 'postgresql://order_app:order_dev_password@127.0.0.1:5432/order_system';
+const captchaSecret = process.env.CAPTCHA_SECRET || crypto.randomBytes(32).toString('hex');
 const pool = new Pool({ connectionString: databaseUrl });
 
 app.use(express.json({ limit: '100kb' }));
@@ -94,6 +96,21 @@ async function initializeDatabase() {
       expires_at TIMESTAMPTZ NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS login_captchas (
+      id TEXT PRIMARY KEY,
+      answer_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS login_attempt_limits (
+      scope TEXT PRIMARY KEY,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      blocked_until TIMESTAMPTZ
+    );
+
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS business_date DATE;
     UPDATE orders SET business_date=(created_at AT TIME ZONE 'Asia/Taipei')::date WHERE business_date IS NULL;
     ALTER TABLE orders ALTER COLUMN business_date SET NOT NULL;
@@ -138,6 +155,7 @@ async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_order_exports_business_date ON order_exports(business_date DESC, exported_at DESC);
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_login_captchas_expires_at ON login_captchas(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_legacy_customer_id ON users(legacy_customer_id) WHERE legacy_customer_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_legacy_order_id ON orders(legacy_order_id) WHERE legacy_order_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_order_items_legacy_detail_id ON order_items(legacy_detail_id) WHERE legacy_detail_id IS NOT NULL;
@@ -205,24 +223,106 @@ function parsePagination(req, defaultPageSize = 50) {
   return { page, pageSize, offset:(page - 1) * pageSize };
 }
 
+function loginScopes(username, req) {
+  return [`account:${String(username || '').trim().toLowerCase() || '(empty)'}`, `ip:${req.ip || req.socket.remoteAddress || 'unknown'}`];
+}
+
+async function isLoginBlocked(scopes) {
+  const { rows } = await pool.query(`
+    SELECT blocked_until FROM login_attempt_limits
+    WHERE scope = ANY($1::text[]) AND blocked_until > NOW()
+    ORDER BY blocked_until DESC LIMIT 1
+  `, [scopes]);
+  return Boolean(rows[0]);
+}
+
+async function recordLoginFailure(scopes) {
+  for (const scope of scopes) {
+    await pool.query(`
+      INSERT INTO login_attempt_limits (scope, failure_count, window_started_at, blocked_until)
+      VALUES ($1, 1, NOW(), NULL)
+      ON CONFLICT (scope) DO UPDATE SET
+        failure_count = CASE
+          WHEN login_attempt_limits.window_started_at < NOW() - INTERVAL '10 minutes' THEN 1
+          ELSE login_attempt_limits.failure_count + 1
+        END,
+        window_started_at = CASE
+          WHEN login_attempt_limits.window_started_at < NOW() - INTERVAL '10 minutes' THEN NOW()
+          ELSE login_attempt_limits.window_started_at
+        END,
+        blocked_until = CASE
+          WHEN login_attempt_limits.blocked_until > NOW() THEN login_attempt_limits.blocked_until
+          WHEN login_attempt_limits.window_started_at < NOW() - INTERVAL '10 minutes' THEN NULL
+          WHEN login_attempt_limits.failure_count + 1 >= 5 THEN NOW() + INTERVAL '10 minutes'
+          ELSE NULL
+        END
+    `, [scope]);
+  }
+}
+
+async function clearLoginFailures(scopes) {
+  await pool.query('DELETE FROM login_attempt_limits WHERE scope = ANY($1::text[])', [scopes]);
+}
+
+async function consumeCaptcha(id, answer) {
+  if (!id) return false;
+  const { rows } = await pool.query(`
+    UPDATE login_captchas SET used_at=NOW()
+    WHERE id=$1 AND used_at IS NULL AND expires_at > NOW()
+    RETURNING answer_hash
+  `, [id]);
+  return Boolean(/^\d{5}$/.test(answer) && rows[0] && captchaMatches(rows[0].answer_hash, id, answer, captchaSecret));
+}
+
+app.get('/api/captcha', async (_req, res) => {
+  const id = crypto.randomUUID();
+  const answer = createCaptchaAnswer();
+  await pool.query(`
+    INSERT INTO login_captchas (id, answer_hash, expires_at)
+    VALUES ($1, $2, NOW() + INTERVAL '5 minutes')
+  `, [id, hashCaptcha(id, answer, captchaSecret)]);
+  await pool.query("DELETE FROM login_captchas WHERE expires_at < NOW() - INTERVAL '1 day'");
+  await pool.query("DELETE FROM login_attempt_limits WHERE window_started_at < NOW() - INTERVAL '1 day' AND COALESCE(blocked_until, NOW() - INTERVAL '1 second') < NOW()");
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json({ id, image:captchaDataUrl(buildCaptchaSvg(answer)), expiresIn:300 });
+});
+
 app.post('/api/login', async (req, res) => {
-  const username = String(req.body.username || '').trim();
-  const password = String(req.body.password || '');
+  const body = req.body || {};
+  const username = String(body.username || '').trim();
+  const password = String(body.password || '');
+  const captchaId = String(body.captchaId || '');
+  const captchaAnswer = String(body.captchaAnswer || '').trim();
+  const scopes = loginScopes(username, req);
+  if (await isLoginBlocked(scopes)) {
+    return res.status(429).json({ error: '登入錯誤次數過多，請於 10 分鐘後再試' });
+  }
+  if (!await consumeCaptcha(captchaId, captchaAnswer)) {
+    await recordLoginFailure(scopes);
+    return res.status(400).json({ error: '驗證碼錯誤或已失效，請重新輸入' });
+  }
   const { rows } = await pool.query('SELECT * FROM users WHERE username = $1 AND active = TRUE', [username]);
   const user = rows[0];
-  if (!user) return res.status(401).json({ error: '帳號或密碼錯誤' });
+  if (!user) {
+    await recordLoginFailure(scopes);
+    return res.status(401).json({ error: '帳號或密碼錯誤' });
+  }
   let passwordMatches = await bcrypt.compare(password, user.password_hash).catch(() => false);
   if (!passwordMatches && user.role === 'admin' && matchesLegacyMd5(password, user.legacy_password)) {
     const upgradedHash = await bcrypt.hash(password, 12);
     await pool.query('UPDATE users SET password_hash=$1, legacy_password=NULL, password_reset_required=FALSE WHERE id=$2', [upgradedHash, user.id]);
     passwordMatches = true;
   }
-  if (!passwordMatches) return res.status(401).json({ error: '帳號或密碼錯誤' });
+  if (!passwordMatches) {
+    await recordLoginFailure(scopes);
+    return res.status(401).json({ error: '帳號或密碼錯誤' });
+  }
   if (user.role === 'admin' && user.legacy_password) {
     await pool.query('UPDATE users SET legacy_password=NULL WHERE id=$1', [user.id]);
   }
 
   const token = crypto.randomBytes(32).toString('hex');
+  await clearLoginFailures(scopes);
   await pool.query('DELETE FROM sessions WHERE expires_at <= NOW()');
   await pool.query('INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, NOW() + ($3 * INTERVAL \'1 hour\'))', [token, user.id, sessionHours]);
   res.setHeader('Set-Cookie', `order_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${sessionHours * 3600}`);

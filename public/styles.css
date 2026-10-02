@@ -53,6 +53,10 @@ td { padding:13px 14px; border-top:1px solid #e7e9ed; }
 .login-wrap { min-height:560px; display:grid; place-items:center; }
 .login-card { width:min(100%,430px); padding:30px; border:1px solid #dfe3e8; border-radius:13px; background:#fff; }
 .login-mark { width:42px; height:42px; margin-bottom:20px; border-radius:10px; }
+.captcha-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:11px; }
+.captcha-image-button { width:220px; max-width:100%; overflow:hidden; border:1px solid #d5d9df; border-radius:8px; padding:0; background:#f8fafc; color:#626a77; text-align:left; }
+.captcha-image-button img { display:block; width:220px; max-width:100%; height:72px; object-fit:contain; background:#f7f4e8; }
+.captcha-image-button span { display:block; padding:6px 9px; font-size:14px; font-weight:600; text-align:center; }
 label { display:block; margin-top:18px; color:#3e4550; font-size:17px; font-weight:700; }
 input,textarea,select { width:100%; margin-top:7px; padding:11px 12px; border:1px solid #d5d9df; border-radius:8px; outline:none; background:#fff; color:#171a21; }
 input:focus,textarea:focus,select:focus { border-color:#5c6680; box-shadow:0 0 0 3px rgba(61,72,99,.1); }

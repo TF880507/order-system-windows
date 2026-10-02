@@ -8,6 +8,7 @@ const scanPlatform = /Android/i.test(navigator.userAgent) || Boolean(window.Andr
   ? 'android'
   : (/Windows/i.test(navigator.userAgent) ? 'windows' : 'desktop');
 const hasNativeAndroidScanner = scanPlatform === 'android' && typeof window.AndroidScanner?.scanBarcode === 'function';
+let currentCaptchaId = '';
 document.documentElement.classList.add(`platform-${scanPlatform}`);
 
 function focusHardwareScanner() {
@@ -43,6 +44,25 @@ async function api(url, options = {}) {
   return data;
 }
 
+async function loadCaptcha() {
+  const refreshButton = $('#captcha-refresh');
+  const image = $('#captcha-image');
+  const input = $('#login-captcha');
+  refreshButton.disabled = true;
+  currentCaptchaId = '';
+  try {
+    const captcha = await api('/api/captcha');
+    currentCaptchaId = captcha.id;
+    image.src = captcha.image;
+    input.value = '';
+  } catch (error) {
+    image.removeAttribute('src');
+    showMessage('#login-error', `驗證碼載入失敗：${error.message}`);
+  } finally {
+    refreshButton.disabled = false;
+  }
+}
+
 function showPage(name) {
   scanner.cancel();
   manualScanner.cancel();
@@ -55,6 +75,7 @@ function showPage(name) {
   if (name === 'vendors') loadVendors();
   if (name === 'schedule') loadSchedule();
   if (name === 'admin-orders') loadAdminOrders();
+  if (name === 'login') loadCaptcha();
 }
 
 function showWork(name) {
@@ -378,11 +399,20 @@ function editProduct(id) {
 
 $('#login-form').addEventListener('submit', async (event) => {
   event.preventDefault(); clearMessage('#login-error');
+  const submitButton = $('#login-submit');
+  submitButton.disabled = true;
   try {
-    setAuthenticatedUi(await api('/api/login', { method:'POST', body:JSON.stringify({ username:$('#login-username').value, password:$('#login-password').value }) }));
+    setAuthenticatedUi(await api('/api/login', { method:'POST', body:JSON.stringify({ username:$('#login-username').value, password:$('#login-password').value, captchaId:currentCaptchaId, captchaAnswer:$('#login-captcha').value }) }));
+    currentCaptchaId = '';
     showWork('scan');
-  } catch (error) { showMessage('#login-error', error.message); }
+  } catch (error) {
+    showMessage('#login-error', error.message);
+    await loadCaptcha();
+    $('#login-captcha').focus();
+  } finally { submitButton.disabled = false; }
 });
+
+$('#captcha-refresh').addEventListener('click', () => loadCaptcha());
 
 $('#logout-button').addEventListener('click', async () => {
   try { await api('/api/logout', { method:'POST' }); } catch (_) {}

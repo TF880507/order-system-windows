@@ -11,6 +11,7 @@ COPY order-range.js ./
 COPY legacy-login.js ./
 COPY product-spreadsheet.js ./
 COPY barcode-lookup.js ./
+COPY captcha.js ./
 COPY scripts ./scripts
 COPY public ./public
 
