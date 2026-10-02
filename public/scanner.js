@@ -29,6 +29,12 @@ function attachScanner({ input, active, invalidate, lookup, success, failure, de
     // Keep scan focus for the next item, but never steal focus from edits.
     if (document.activeElement === input) input.select();
   }
+  async function submit(value) {
+    cancel();
+    input.value = String(value ?? '').trim();
+    invalidate();
+    return receive();
+  }
   input.addEventListener('input', () => {
     cancel();
     invalidate();
@@ -47,5 +53,5 @@ function attachScanner({ input, active, invalidate, lookup, success, failure, de
     cancel();
     if (active()) timer = setTimeout(receive, delay);
   });
-  return { cancel, receive, focus() { if (active()) { input.focus(); input.select(); } } };
+  return { cancel, receive, submit, focus() { if (active()) { input.focus(); input.select(); } } };
 }

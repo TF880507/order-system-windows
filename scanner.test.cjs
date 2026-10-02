@@ -52,3 +52,10 @@ test('IME composition is not submitted prematurely', async () => {
   const s = setup(); s.listeners.compositionstart(); s.type('471'); s.key('Enter'); await tick();
   assert.deepEqual(s.requests, []); s.listeners.compositionend(); await tick(); assert.deepEqual(s.results, ['471']);
 });
+test('native camera result uses the same lookup flow and preserves leading zeroes', async () => {
+  const s = setup();
+  await s.scanner.submit('0012345678905');
+  assert.equal(s.input.value, '0012345678905');
+  assert.deepEqual(s.requests, ['0012345678905']);
+  assert.deepEqual(s.results, ['0012345678905']);
+});

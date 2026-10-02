@@ -12,10 +12,11 @@ $aapt = Join-Path $buildTools 'aapt.exe'
 $d8 = Join-Path $buildTools 'd8.bat'
 $zipalign = Join-Path $buildTools 'zipalign.exe'
 $apksigner = Join-Path $buildTools 'apksigner.bat'
+$zxingJar = Join-Path $projectDir 'libs\zxing-core-3.5.3.jar'
 $keytool = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin\keytool.exe' } else { '' }
 if (-not $keytool -or -not (Test-Path -LiteralPath $keytool)) { $keytool = (Get-Command keytool.exe).Source }
 
-foreach ($required in @($platform, $aapt2, $aapt, $d8, $zipalign, $apksigner, $keytool)) {
+foreach ($required in @($platform, $aapt2, $aapt, $d8, $zipalign, $apksigner, $keytool, $zxingJar)) {
   if (-not (Test-Path -LiteralPath $required)) { throw "缺少 Android 建置工具：$required" }
 }
 
@@ -54,16 +55,17 @@ if (-not (Test-Path -LiteralPath $keystore)) {
   Assert-NativeSuccess '建立 APK 簽章金鑰'
 }
 
-$source = Join-Path $stageDir 'src\tw\com\isunfar\orderapp\MainActivity.java'
-& javac -encoding UTF-8 -source 8 -target 8 -bootclasspath $platform -d $classesDir $source
+$sources = Get-ChildItem -Path (Join-Path $stageDir 'src') -Recurse -Filter '*.java' | ForEach-Object { $_.FullName }
+& javac -encoding UTF-8 -source 8 -target 8 -bootclasspath $platform -classpath $zxingJar -d $classesDir $sources
 Assert-NativeSuccess '編譯 Android Java 程式'
-& $d8 (Join-Path $classesDir 'tw\com\isunfar\orderapp\MainActivity.class') (Join-Path $classesDir 'tw\com\isunfar\orderapp\MainActivity$1.class') (Join-Path $classesDir 'tw\com\isunfar\orderapp\MainActivity$AppDownloadListener.class') --lib $platform --min-api 23 --output $dexDir
+$classFiles = Get-ChildItem -Path $classesDir -Recurse -Filter '*.class' | ForEach-Object { $_.FullName }
+& $d8 $classFiles $zxingJar --lib $platform --min-api 23 --output $dexDir
 Assert-NativeSuccess '產生 Android DEX'
 
 $compiledResources = Join-Path $buildDir 'resources.zip'
 & $aapt2 compile --dir (Join-Path $stageDir 'res') -o $compiledResources
 Assert-NativeSuccess '編譯 Android 資源'
-& $aapt2 link -o $unsignedApk -I $platform --manifest (Join-Path $stageDir 'AndroidManifest.xml') -R $compiledResources --auto-add-overlay --min-sdk-version 23 --target-sdk-version 35 --version-code 1 --version-name 1.0
+& $aapt2 link -o $unsignedApk -I $platform --manifest (Join-Path $stageDir 'AndroidManifest.xml') -R $compiledResources --auto-add-overlay --min-sdk-version 23 --target-sdk-version 35 --version-code 2 --version-name 2.0
 Assert-NativeSuccess '封裝 Android 資源'
 Push-Location $dexDir
 try {

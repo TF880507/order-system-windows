@@ -4,6 +4,36 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
   ? window.location.pathname.replace(/\/$/, '')
   : window.location.pathname.slice(0, window.location.pathname.lastIndexOf('/'));
+const scanPlatform = /Android/i.test(navigator.userAgent) || Boolean(window.AndroidScanner)
+  ? 'android'
+  : (/Windows/i.test(navigator.userAgent) ? 'windows' : 'desktop');
+const hasNativeAndroidScanner = scanPlatform === 'android' && typeof window.AndroidScanner?.scanBarcode === 'function';
+document.documentElement.classList.add(`platform-${scanPlatform}`);
+
+function focusHardwareScanner() {
+  if (scanPlatform !== 'android') scanner.focus();
+}
+
+function configureScannerPlatform() {
+  const label = $('#platform-scanner-label');
+  const caption = $('#scan-entry-caption');
+  const instruction = $('#scan-device-instruction');
+  const cameraActions = $('#android-camera-actions');
+  if (scanPlatform === 'android') {
+    label.textContent = hasNativeAndroidScanner ? 'Android 相機掃描' : 'Android 掃碼';
+    caption.textContent = hasNativeAndroidScanner ? '開啟裝置相機掃描商品條碼或 QR Code' : '請使用 Android App 開啟相機掃描';
+    instruction.textContent = hasNativeAndroidScanner
+      ? '按下按鈕開啟裝置鏡頭，將商品條碼或 QR Code 對準掃描框。'
+      : '目前瀏覽器無法直接使用相機，請改用好市吉 Android App。';
+    cameraActions.classList.remove('hidden');
+    $('#camera-scan-open').disabled = !hasNativeAndroidScanner;
+    $('#scan-status').textContent = hasNativeAndroidScanner ? '相機掃描已就緒' : '請使用 Android App';
+  } else {
+    label.textContent = scanPlatform === 'windows' ? 'Windows USB 掃碼輸入' : 'USB 掃碼輸入';
+    caption.textContent = '使用 USB 掃碼器快速帶入商品';
+    instruction.textContent = '請使用英文輸入法。掃碼後自動查詢商品；填寫數量或備註後，點「繼續掃描」接收下一筆。';
+  }
+}
 
 async function api(url, options = {}) {
   const response = await fetch(`${appBase}${url}`, { credentials:'same-origin', headers:{ 'Content-Type':'application/json', ...(options.headers || {}) }, ...options });
@@ -18,7 +48,7 @@ function showPage(name) {
   $$('.page').forEach((page) => page.classList.toggle('active', page.id === `page-${name}`));
   $$('#main-nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === name));
   if (name === 'home') loadOrders('#recent-orders', 5);
-  if (name === 'workspace') setTimeout(() => scanner.focus(), 0);
+  if (name === 'workspace') setTimeout(focusHardwareScanner, 0);
   if (name === 'products') { loadProducts(); setTimeout(() => productScanner.focus(), 0); }
   if (name === 'vendors') loadVendors();
   if (name === 'schedule') loadSchedule();
@@ -29,7 +59,7 @@ function showWork(name) {
   showPage('workspace');
   $$('.work-view').forEach((view) => view.classList.toggle('active', view.id === `work-${name}`));
   $$('.tabs button').forEach((button) => button.classList.toggle('active', button.dataset.work === name));
-  if (name === 'scan') setTimeout(() => scanner.focus(), 0);
+  if (name === 'scan') setTimeout(focusHardwareScanner, 0);
   if (name === 'orders') loadOrders('#order-list');
 }
 
@@ -98,7 +128,7 @@ function clearOrderForm(mode) {
   $(`#${mode}-quantity`).value = 1;
   $(`#${mode}-note`).value = '';
   clearMessage(`#${mode}-message`);
-  if (mode === 'scan') { scanner.cancel(); $('#scanner-input').value = ''; scanReady(false); scanner.focus(); }
+  if (mode === 'scan') { scanner.cancel(); $('#scanner-input').value = ''; scanReady(false); focusHardwareScanner(); }
   if (mode === 'manual') $('#manual-barcode').value = '';
 }
 
@@ -391,7 +421,25 @@ $('#scanner-input').addEventListener('blur', () => {
 });
 $('#scan-resume').addEventListener('click', () => scanner.focus());
 $('#scan-lookup').addEventListener('click', () => { scanner.cancel(); scanner.receive(); });
-$('#scan-zone').addEventListener('click', (event) => { if (!event.target.closest('input,button,textarea')) scanner.focus(); });
+$('#scan-zone').addEventListener('click', (event) => { if (scanPlatform !== 'android' && !event.target.closest('input,button,textarea')) scanner.focus(); });
+$('#camera-scan-open').addEventListener('click', () => {
+  if (!hasNativeAndroidScanner) {
+    showMessage('#scan-message', '請使用好市吉 Android App 才能啟動裝置相機掃描');
+    return;
+  }
+  $('#scan-status').textContent = '相機掃描中';
+  clearMessage('#scan-message');
+  window.AndroidScanner.scanBarcode();
+});
+window.handleNativeBarcodeScan = async (value, format) => {
+  showWork('scan');
+  $('#scan-status').textContent = `已掃描${format ? `（${format}）` : ''}`;
+  await scanner.submit(value);
+};
+window.handleNativeBarcodeScanError = (message) => {
+  $('#scan-status').textContent = '相機掃描已停止';
+  if (message) showMessage('#scan-message', message);
+};
 $('#scan-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (scanSaving) return;
@@ -409,7 +457,7 @@ $('#scan-form').addEventListener('submit', async (event) => {
     scanSaving = false;
     $('#scanner-input').disabled = false;
     scanReady(Boolean(state.scanProduct));
-    if (!state.scanProduct) scanner.focus();
+    if (!state.scanProduct) focusHardwareScanner();
   }
 });
 
@@ -738,4 +786,5 @@ historyStart.setMonth(historyStart.getMonth() - 1);
 $('#history-start-date').value = historyStart.toLocaleDateString('en-CA');
 $('#history-end-date').value = today;
 $('#admin-export-date').value = today;
+configureScannerPlatform();
 api('/api/me').then((user) => { setAuthenticatedUi(user); loadOrders('#recent-orders', 5); }).catch(() => setAuthenticatedUi(null));

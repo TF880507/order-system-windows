@@ -67,6 +67,11 @@ textarea { min-height:94px; resize:vertical; }
 .scan-zone:focus-within { box-shadow:inset 0 0 0 2px #69728a; }
 .scan-glyph { width:94px; height:94px; display:grid; place-items:center; margin:0 auto 18px; border:2px dashed #939ba8; border-radius:13px; font-size:40px; }
 .scanner-input-label { max-width:330px; margin:20px auto 0; text-align:left; }
+.android-camera-actions { display:grid; justify-items:center; gap:10px; margin-top:22px; }
+.android-camera-actions small { max-width:440px; color:#737985; line-height:1.55; }
+.camera-button { min-width:220px; min-height:52px; font-size:18px; }
+.platform-android #hardware-scanner-actions { display:none; }
+.platform-android .scan-zone { background:#f6f8fc; }
 .order-form { padding:20px; }
 .product-preview { margin:0 0 12px; padding:13px; border:1px solid #dfe3e8; border-radius:8px; background:#f7f8fa; }
 .product-preview.empty { color:#9299a4; }
