@@ -8,6 +8,7 @@ const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell, buildOrdersCsv
 const { validateOrderDateRange } = require('./order-range');
 const { matchesLegacyMd5 } = require('./legacy-login');
 const { MAX_PRODUCT_IMPORT_ROWS, createProductTemplateBuffer, createProductsExportBuffer, parseProductImportBuffer } = require('./product-spreadsheet');
+const { barcodeCandidates } = require('./barcode-lookup');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -53,6 +54,11 @@ async function initializeDatabase() {
       user_id BIGINT NOT NULL REFERENCES users(id),
       status TEXT NOT NULL DEFAULT 'created',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS order_number_sequences (
+      business_date DATE PRIMARY KEY,
+      last_number INTEGER NOT NULL CHECK (last_number > 0)
     );
 
     CREATE TABLE IF NOT EXISTS order_items (
@@ -271,7 +277,7 @@ function readVendorPayload(body, requirePassword = false) {
   if (!username || username.length > 120 || /\s/.test(username)) return { error:'登入帳號必填、不可包含空白，且最多 120 字' };
   if ((requirePassword || password) && (password.length < 6 || password.length > 200)) return { error:'密碼須為 6 至 200 個字元' };
   if (!displayName || displayName.length > 120) return { error:'廠商名稱必填，且最多 120 字' };
-  if (!customerCode || customerCode.length > 80) return { error:'客戶代碼必填，且最多 80 字' };
+  if (!customerCode || customerCode.length > 80) return { error:'客戶序號必填，且最多 80 字' };
   if (phone.length > 80) return { error:'電話最多 80 字' };
   if (!taxId || taxId.length > 80) return { error:'統一編號必填，且最多 80 字' };
   return { username, password, displayName, customerCode, phone, taxId };
@@ -357,7 +363,7 @@ app.get('/api/admin/vendors/export', requireAuth, requireAdmin, async (_req, res
     ORDER BY users.display_name, users.id
   `);
   const csvRows = [
-    ['廠商名稱', '登入帳號', '客戶代碼', '電話', '統一編號', '訂單數', '最近訂購日', '狀態'],
+    ['廠商名稱', '登入帳號', '客戶序號', '電話', '統一編號', '訂單數', '最近訂購日', '狀態'],
     ...rows.map((vendor) => [vendor.displayName, vendor.username, vendor.customerCode, vendor.phone, vendor.taxId, vendor.orderCount, vendor.latestOrderDate, vendor.active ? '啟用' : '停用'])
   ];
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -367,7 +373,7 @@ app.get('/api/admin/vendors/export', requireAuth, requireAdmin, async (_req, res
 
 app.get('/api/admin/vendors/import-template', requireAuth, requireAdmin, (_req, res) => {
   const rows = [
-    ['客戶代碼', '廠商名稱', '電話', '統一編號', '登入帳號', '登入密碼'],
+    ['客戶序號', '廠商名稱', '電話', '統一編號', '登入帳號', '登入密碼'],
     ['6439A', '範例廠商（請刪除此列）', '02-1234-5678', '12345678', 'vendor001', '000000']
   ];
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -404,7 +410,7 @@ app.post('/api/admin/vendors/import', requireAuth, requireAdmin,
       const taxId = importCell(row, ['統一編號', '統編']);
       const username = importCell(row, ['登入帳號', '帳號']) || taxId;
       const password = importCell(row, ['登入密碼', '密碼']);
-      const error = !customerCode ? '缺少客戶代碼' : !displayName ? '缺少廠商名稱' : !taxId ? '缺少統一編號' : !username ? '缺少登入帳號' : password && password.length < 6 ? '登入密碼至少需要 6 個字元' : '';
+      const error = !customerCode ? '缺少客戶序號' : !displayName ? '缺少廠商名稱' : !taxId ? '缺少統一編號' : !username ? '缺少登入帳號' : password && password.length < 6 ? '登入密碼至少需要 6 個字元' : '';
       return { row:index + 2, customerCode, displayName, phone, taxId, username, password, error };
     });
     const invalid = parsed.filter((item) => item.error);
@@ -507,7 +513,13 @@ app.post('/api/admin/products/import', requireAuth, requireAdmin,
   });
 
 app.get('/api/products/:barcode', requireAuth, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, barcode, name, specification FROM products WHERE barcode = $1 AND active = TRUE', [req.params.barcode.trim()]);
+  const candidates = barcodeCandidates(req.params.barcode);
+  if (!candidates.length) return res.status(400).json({ error:'請輸入有效商品條碼' });
+  const { rows } = await pool.query(`
+    SELECT id, barcode, name, specification FROM products
+    WHERE barcode=ANY($1::text[]) AND active=TRUE
+    ORDER BY array_position($1::text[], barcode) LIMIT 1
+  `, [candidates]);
   if (!rows[0]) return res.status(404).json({ error: '查無此商品條碼' });
   res.json(rows[0]);
 });
@@ -578,12 +590,21 @@ async function createOrder(userId, items) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [datePrefix]);
     const closed = await client.query('SELECT 1 FROM daily_closings WHERE business_date=$1::date', [businessDate]);
     if (closed.rowCount) throw new Error('今日訂單已結單，無法再新增');
-    const count = Number((await client.query('SELECT COUNT(*) AS count FROM orders WHERE order_number LIKE $1', [`${datePrefix}-%`])).rows[0].count) + 1;
-    const orderNumber = `${datePrefix}-${String(count).padStart(4, '0')}`;
+    const pattern = `^${datePrefix}-([0-9]+)$`;
+    const sequence = Number((await client.query(`
+      INSERT INTO order_number_sequences (business_date, last_number)
+      SELECT $1::date, COALESCE(MAX((substring(order_number FROM $2))::integer),0)+1
+      FROM orders WHERE business_date=$1::date AND order_number ~ $2
+      ON CONFLICT (business_date) DO UPDATE
+        SET last_number=order_number_sequences.last_number+1
+      RETURNING last_number
+    `, [businessDate, pattern])).rows[0].last_number);
+    const orderNumber = `${datePrefix}-${String(sequence).padStart(4, '0')}`;
     const order = (await client.query('INSERT INTO orders (order_number, user_id, business_date) VALUES ($1, $2, $3) RETURNING id', [orderNumber, userId, businessDate])).rows[0];
 
     for (const item of items) {
-      const product = (await client.query('SELECT * FROM products WHERE barcode=$1 AND active=TRUE', [String(item.barcode)])).rows[0];
+      const candidates = barcodeCandidates(item.barcode);
+      const product = (await client.query(`SELECT * FROM products WHERE barcode=ANY($1::text[]) AND active=TRUE ORDER BY array_position($1::text[],barcode) LIMIT 1`, [candidates])).rows[0];
       if (!product) throw new Error(`查無商品：${item.barcode}`);
       const quantity = Number(item.quantity);
       if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new Error('商品數量不正確');
@@ -599,7 +620,10 @@ app.post('/api/orders', requireAuth, async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   if (!items.length) return res.status(400).json({ error: '訂單至少需要一項商品' });
   try { res.status(201).json(await createOrder(req.user.id, items)); }
-  catch (error) { res.status(400).json({ error:error.message }); }
+  catch (error) {
+    if (error.code === '23505' && error.constraint === 'orders_order_number_key') return res.status(409).json({ error:'訂單編號建立衝突，請重新送出一次' });
+    res.status(400).json({ error:error.message });
+  }
 });
 
 async function listOrders(req, res, range = null) {

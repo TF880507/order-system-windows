@@ -87,6 +87,7 @@ public class ScannerActivity extends Activity {
         Map<DecodeHintType, Object> hints = new EnumMap<DecodeHintType, Object>(DecodeHintType.class);
         hints.put(DecodeHintType.POSSIBLE_FORMATS, formats);
         hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
+        hints.put(DecodeHintType.ASSUME_GS1, Boolean.TRUE);
         hints.put(DecodeHintType.CHARACTER_SET, "UTF-8");
         barcodeReader.setHints(hints);
     }

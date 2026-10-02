@@ -29,7 +29,7 @@ class_files=()
 while IFS= read -r -d '' file; do class_files+=("$file"); done < <(find "$classes" -name '*.class' -print0)
 "$tools/d8" "${class_files[@]}" "$zxing" --lib "$platform" --min-api 23 --output "$dex"
 "$tools/aapt2" compile --dir "$stage/res" -o "$build/resources.zip"
-"$tools/aapt2" link -o "$build/unsigned.apk" -I "$platform" --manifest "$stage/AndroidManifest.xml" -R "$build/resources.zip" --auto-add-overlay --min-sdk-version 23 --target-sdk-version 35 --version-code 3 --version-name 3.0
+"$tools/aapt2" link -o "$build/unsigned.apk" -I "$platform" --manifest "$stage/AndroidManifest.xml" -R "$build/resources.zip" --auto-add-overlay --min-sdk-version 23 --target-sdk-version 35 --version-code 4 --version-name 4.0
 (cd "$dex" && "$tools/aapt" add "$build/unsigned.apk" classes.dex)
 "$tools/zipalign" -f -p 4 "$build/unsigned.apk" "$build/aligned.apk"
 "$tools/apksigner" sign --min-sdk-version 23 --ks "$keystore" --ks-key-alias hao-shi-ji --ks-pass "pass:$password" --key-pass "pass:$password" --out "$build/signed.apk" "$build/aligned.apk"

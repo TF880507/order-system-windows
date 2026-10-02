@@ -78,7 +78,7 @@
         <section class="detail-modal vendor-dialog">
           <div class="detail-header"><h2 id="vendor-form-title">新增廠商</h2><button id="vendor-editor-close" class="icon-button" type="button" aria-label="關閉">×</button></div>
           <form id="vendor-form" class="vendor-form-grid">
-            <label>客戶代碼<input id="vendor-customer-code" maxlength="80" placeholder="例如：6439A" required></label>
+            <label>客戶序號<input id="vendor-customer-code" maxlength="80" placeholder="例如：6439A" required></label>
             <label>廠商名稱<input id="vendor-display-name" maxlength="120" placeholder="請輸入廠商名稱" required></label>
             <label>統一編號<input id="vendor-tax-id" maxlength="80" inputmode="numeric" placeholder="請輸入統一編號" required></label>
             <label>登入帳號<input id="vendor-username" maxlength="120" autocomplete="off" placeholder="廠商登入帳號" required></label>
@@ -93,7 +93,7 @@
             <div class="detail-header"><div><span class="detail-eyebrow">批次建立或更新</span><h2 id="vendor-import-title">匯入廠商</h2></div><button id="vendor-import-close" class="icon-button" type="button" aria-label="關閉">×</button></div>
             <form id="vendor-import-form" class="order-form">
               <label>選擇 CSV、XLS 或 XLSX 檔案<input id="vendor-import-file" type="file" accept=".csv,.xls,.xlsx" required></label>
-              <p class="input-help">必要欄位：客戶代碼、廠商名稱、統一編號。登入帳號空白時使用統一編號；新帳號未填密碼時預設為 000000。</p>
+              <p class="input-help">必要欄位：客戶序號、廠商名稱、統一編號。登入帳號空白時使用統一編號；新帳號未填密碼時預設為 000000。</p>
               <p id="vendor-import-message" class="message hidden"></p>
               <div class="form-actions"><a class="button secondary download-link" href="./api/admin/vendors/import-template">下載匯入範本</a><button id="vendor-import-cancel" class="button secondary" type="button">取消</button><button class="button primary" type="submit">匯入資料</button></div>
             </form>
@@ -101,7 +101,7 @@
         </div>
         <section class="panel">
           <div class="panel-heading vendors-heading"><div><h2>廠商資料</h2><input id="vendor-search" class="product-search" autocomplete="off" placeholder="搜尋廠商名稱、帳號、代碼、電話或統編"></div><div class="heading-actions"><a class="button secondary download-link" href="./api/admin/vendors/export">匯出廠商 CSV</a><button id="vendors-refresh" class="button secondary" type="button">重新整理</button></div></div>
-          <div class="table-scroll"><table><thead><tr><th>廠商名稱</th><th>登入帳號</th><th>客戶代碼</th><th>電話</th><th>統一編號</th><th>訂單數</th><th>最近訂購日</th><th>狀態</th><th>操作</th></tr></thead><tbody id="vendor-list"><tr><td colspan="9" class="empty">載入中</td></tr></tbody></table></div>
+          <div class="table-scroll"><table><thead><tr><th>廠商名稱</th><th>登入帳號</th><th>客戶序號</th><th>電話</th><th>統一編號</th><th>訂單數</th><th>最近訂購日</th><th>狀態</th><th>操作</th></tr></thead><tbody id="vendor-list"><tr><td colspan="9" class="empty">載入中</td></tr></tbody></table></div>
           <div class="product-pagination"><span id="vendor-page-info">載入中</span><div><button id="vendor-page-prev" class="button secondary" type="button">上一頁</button><button id="vendor-page-next" class="button secondary" type="button">下一頁</button></div></div>
         </section>
       </section>
@@ -133,7 +133,7 @@
     <section class="detail-modal">
       <header class="detail-header"><div><span class="detail-eyebrow">訂單商品明細</span><h2 id="order-detail-title">訂單明細</h2></div><button id="order-detail-close" class="icon-button" type="button" aria-label="關閉">×</button></header>
       <div id="order-detail-meta" class="detail-meta"></div>
-      <div class="detail-toolbar"><label id="order-detail-select-wrap" class="select-all-row"><input id="order-detail-select-all" type="checkbox">全選可刪除品項</label><div><a id="order-detail-export" class="button secondary download-link" href="#">下載此訂單 CSV</a><button id="order-detail-delete-order" class="button danger-button" type="button">刪除整張訂單</button><button id="order-detail-delete" class="button danger-button" type="button">刪除所選品項</button></div></div>
+      <div class="detail-toolbar"><label id="order-detail-select-wrap" class="select-all-row"><input id="order-detail-select-all" type="checkbox"><span id="order-detail-select-label">全選可刪除品項</span></label><div><a id="order-detail-export" class="button secondary download-link" href="#">下載此訂單 CSV</a><button id="order-detail-delete-order" class="button danger-button" type="button">刪除整張訂單</button><button id="order-detail-delete" class="button danger-button" type="button">刪除所選品項</button></div></div>
       <p id="order-detail-message" class="message hidden"></p>
       <div class="table-scroll detail-table"><table><thead><tr><th>選取</th><th>條碼</th><th>商品名稱</th><th>規格</th><th>數量</th><th>備註</th><th>操作</th></tr></thead><tbody id="order-detail-items"></tbody></table></div>
     </section>

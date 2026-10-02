@@ -65,7 +65,7 @@ Assert-NativeSuccess '產生 Android DEX'
 $compiledResources = Join-Path $buildDir 'resources.zip'
 & $aapt2 compile --dir (Join-Path $stageDir 'res') -o $compiledResources
 Assert-NativeSuccess '編譯 Android 資源'
-& $aapt2 link -o $unsignedApk -I $platform --manifest (Join-Path $stageDir 'AndroidManifest.xml') -R $compiledResources --auto-add-overlay --min-sdk-version 23 --target-sdk-version 35 --version-code 3 --version-name 3.0
+& $aapt2 link -o $unsignedApk -I $platform --manifest (Join-Path $stageDir 'AndroidManifest.xml') -R $compiledResources --auto-add-overlay --min-sdk-version 23 --target-sdk-version 35 --version-code 4 --version-name 4.0
 Assert-NativeSuccess '封裝 Android 資源'
 Push-Location $dexDir
 try {

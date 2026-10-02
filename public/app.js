@@ -19,6 +19,7 @@ function configureScannerPlatform() {
   const caption = $('#scan-entry-caption');
   const instruction = $('#scan-device-instruction');
   const cameraActions = $('#android-camera-actions');
+  cameraActions.querySelector('small').textContent = '支援 EAN-13、EAN-8、UPC-A、Code 128、Code 39、ITF-14、GS1-128 與 QR Code。';
   if (scanPlatform === 'android') {
     label.textContent = hasNativeAndroidScanner ? 'Android 相機掃描' : 'Android 掃碼';
     caption.textContent = hasNativeAndroidScanner ? '開啟裝置相機掃描商品條碼或 QR Code' : '請使用 Android App 開啟相機掃描';
@@ -218,7 +219,7 @@ async function openOrderDetail(id) {
     $('#order-detail-meta').innerHTML = `
       <div><span>客戶名稱</span><b>${escapeHtml(order.memberName)}</b><small>${escapeHtml(order.memberUsername)}</small></div>
       <div><span>營業日期</span><b>${escapeHtml(order.businessDate)}</b><small>${escapeHtml(formatDateTime(order.createdAt))}</small></div>
-      <div><span>客戶資料</span><b>${escapeHtml(order.phone || '未提供電話')}</b><small>統編：${escapeHtml(order.taxId || '—')}　代碼：${escapeHtml(order.customerCode || '—')}</small></div>
+      <div><span>客戶資料</span><b>${escapeHtml(order.phone || '未提供電話')}</b><small>統編：${escapeHtml(order.taxId || '—')}　客戶序號：${escapeHtml(order.customerCode || '—')}</small></div>
       <div><span>訂單狀態</span><b>${order.editable ? '待結單' : '已結單'}</b><small>${order.editable ? '可修改數量、備註或刪除品項' : '已鎖定，不可修改'}</small></div>`;
     $('#order-detail-items').innerHTML = order.items.length ? order.items.map((item) => `<tr>
       <td><input class="detail-item-check" type="checkbox" value="${item.id}" aria-label="選取 ${escapeHtml(item.name)}" ${order.editable && state.user.role === 'admin' ? '' : 'disabled'}></td>
@@ -233,6 +234,7 @@ async function openOrderDetail(id) {
     $('#order-detail-export').classList.toggle('hidden', !isAdmin);
     $('#order-detail-select-all').checked = false;
     $('#order-detail-select-all').disabled = !isAdmin || !order.editable || !order.items.length;
+    $('#order-detail-select-label').textContent = order.editable ? '全選可刪除品項' : '已結單，品項不可勾選或刪除';
     $('#order-detail-delete').disabled = !isAdmin || !order.editable || !order.items.length;
     $('#order-detail-delete-order').disabled = !order.editable;
     $('#order-detail-export').href = `${appBase}/api/admin/orders/${order.id}/export`;
