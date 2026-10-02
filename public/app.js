@@ -292,6 +292,19 @@ function openVendorImport() {
   setTimeout(() => $('#vendor-import-file').focus(), 100);
 }
 
+function closeProductImport() {
+  $('#product-import-form').reset();
+  $('#product-import-modal').classList.add('hidden');
+  clearMessage('#product-import-message');
+}
+
+function openProductImport() {
+  $('#product-import-form').reset();
+  clearMessage('#product-import-message');
+  $('#product-import-modal').classList.remove('hidden');
+  setTimeout(() => $('#product-import-file').focus(), 100);
+}
+
 async function loadSchedule() {
   if (!state.user || state.user.role !== 'admin') return;
   const target = $('#schedule-list');
@@ -529,6 +542,30 @@ $('#product-search').addEventListener('input', () => { clearTimeout(productSearc
 $('#product-search-field').addEventListener('change', () => { state.productPage = 1; loadProducts(); });
 $('#product-page-prev').addEventListener('click', () => { if (state.productPage > 1) { state.productPage -= 1; loadProducts(); } });
 $('#product-page-next').addEventListener('click', () => { if (state.productPage < state.productTotalPages) { state.productPage += 1; loadProducts(); } });
+$('#product-import-open').addEventListener('click', openProductImport);
+$('#product-import-close').addEventListener('click', closeProductImport);
+$('#product-import-cancel').addEventListener('click', closeProductImport);
+$('#product-import-modal').addEventListener('click', (event) => { if (event.target === $('#product-import-modal')) closeProductImport(); });
+$('#product-import-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  clearMessage('#product-import-message');
+  const file = $('#product-import-file').files[0];
+  if (!file) return showMessage('#product-import-message', '請選擇要匯入的檔案');
+  if (file.size > 10 * 1024 * 1024) return showMessage('#product-import-message', '檔案不可超過 10 MB');
+  const submit = event.submitter;
+  if (submit) submit.disabled = true;
+  try {
+    const result = await api('/api/admin/products/import', {
+      method:'POST', headers:{ 'Content-Type':'application/octet-stream', 'X-File-Name':encodeURIComponent(file.name) }, body:await file.arrayBuffer()
+    });
+    const disabledNote = result.disabled ? `；其中 ${result.disabled} 筆設為停用` : '';
+    showToast(`匯入完成：新增 ${result.inserted} 筆、更新 ${result.updated} 筆${disabledNote}`);
+    closeProductImport();
+    state.productPage = 1;
+    loadProducts();
+  } catch (error) { showMessage('#product-import-message', error.message); }
+  finally { if (submit) submit.disabled = false; }
+});
 $('#vendors-refresh').addEventListener('click', loadVendors);
 let vendorSearchTimer;
 $('#vendor-search').addEventListener('input', () => { clearTimeout(vendorSearchTimer); state.vendorPage = 1; vendorSearchTimer = setTimeout(loadVendors, 180); });
@@ -615,7 +652,8 @@ $('#vendor-list').addEventListener('click', async (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!$('#vendor-import-modal').classList.contains('hidden')) closeVendorImport();
+  if (!$('#product-import-modal').classList.contains('hidden')) closeProductImport();
+  else if (!$('#vendor-import-modal').classList.contains('hidden')) closeVendorImport();
   else if (!$('#vendor-editor').classList.contains('hidden')) closeVendorEditor();
 });
 $('#product-list').addEventListener('click', async (event) => {

@@ -9,6 +9,7 @@ COPY server.js ./
 COPY schedule.js ./
 COPY order-range.js ./
 COPY legacy-login.js ./
+COPY product-spreadsheet.js ./
 COPY scripts ./scripts
 COPY public ./public
 

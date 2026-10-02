@@ -52,12 +52,24 @@
         </section>
       </section>
       <section id="page-products" class="page">
-        <div class="page-heading"><div><h1>商品管理</h1><p>新增後可立刻供掃碼與手動輸入查詢使用。</p></div></div>
+        <div class="page-heading"><div><h1>商品管理</h1><p>新增或批次匯入後，可立刻供掃碼與手動輸入查詢使用。</p></div><button id="product-import-open" class="button primary" type="button">匯入商品</button></div>
         <div class="product-manager">
           <section class="panel product-create"><div class="panel-heading"><h2 id="product-form-title">新增商品</h2></div>
             <form id="product-form" class="order-form"><label>商品條碼<input id="product-barcode" autocomplete="off" spellcheck="false" maxlength="512" placeholder="掃描或輸入商品 barcode／QR Code 內容" required></label><p class="input-help">開啟此頁後可直接掃描；也可按「掃描條碼」後再掃。</p><div class="form-actions compact-actions"><button id="product-scan-resume" class="button secondary" type="button">掃描條碼</button></div><label>商品名稱<input id="product-name" maxlength="120" placeholder="例如：無糖綠茶 600ml" required></label><label>規格／備註<input id="product-specification" maxlength="300" placeholder="例如：24 入／箱（選填）"></label><p id="product-message" role="status" class="message hidden"></p><div class="form-actions"><button id="product-clear" class="button secondary" type="button">清除</button><button id="product-save" class="button primary" type="submit">儲存商品</button></div></form>
           </section>
-          <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><div class="search-with-select product-search-row"><input id="product-search" class="product-search" autocomplete="off" placeholder="輸入搜尋內容"><select id="product-search-field" aria-label="商品搜尋欄位"><option value="barcode">商品條碼</option><option value="name">商品名稱</option><option value="all">全部欄位</option></select></div></div><div class="heading-actions"><a class="button secondary download-link" href="./api/admin/products/export">匯出商品 CSV</a><button id="products-refresh" class="button secondary" type="button">重新整理</button></div></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>規格</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div><div class="product-pagination"><span id="product-page-info">載入中</span><div><button id="product-page-prev" class="button secondary" type="button">上一頁</button><button id="product-page-next" class="button secondary" type="button">下一頁</button></div></div></section>
+          <section class="panel"><div class="panel-heading products-heading"><div><h2>已建檔商品</h2><div class="search-with-select product-search-row"><input id="product-search" class="product-search" autocomplete="off" placeholder="輸入搜尋內容"><select id="product-search-field" aria-label="商品搜尋欄位"><option value="barcode">商品條碼</option><option value="name">商品名稱</option><option value="all">全部欄位</option></select></div></div><div class="heading-actions"><a class="button secondary download-link" href="./api/admin/products/export">匯出商品 Excel</a><button id="products-refresh" class="button secondary" type="button">重新整理</button></div></div><div class="table-scroll"><table><thead><tr><th>商品名稱</th><th>商品條碼</th><th>規格</th><th>操作</th></tr></thead><tbody id="product-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div><div class="product-pagination"><span id="product-page-info">載入中</span><div><button id="product-page-prev" class="button secondary" type="button">上一頁</button><button id="product-page-next" class="button secondary" type="button">下一頁</button></div></div></section>
+        </div>
+        <div id="product-import-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="product-import-title">
+          <section class="detail-modal vendor-import-dialog">
+            <div class="detail-header"><div><span class="detail-eyebrow">批次建立或更新</span><h2 id="product-import-title">匯入商品</h2></div><button id="product-import-close" class="icon-button" type="button" aria-label="關閉">×</button></div>
+            <form id="product-import-form" class="order-form">
+              <label>選擇 CSV、XLS 或 XLSX 檔案<input id="product-import-file" type="file" accept=".csv,.xls,.xlsx" required></label>
+              <p class="input-help">必要欄位：商品條碼、商品名稱。規格／備註與狀態可留空；空白狀態視為啟用。單次最多匯入 8,000 筆，既有條碼會更新。</p>
+              <p class="input-help">請使用下載範本填寫，商品條碼欄已設定為文字格式，可保留前導零並避免科學記號。</p>
+              <p id="product-import-message" class="message hidden"></p>
+              <div class="form-actions"><a class="button secondary download-link" href="./api/admin/products/import-template">下載 Excel 範本</a><button id="product-import-cancel" class="button secondary" type="button">取消</button><button class="button primary" type="submit">匯入資料</button></div>
+            </form>
+          </section>
         </div>
       </section>
       <section id="page-vendors" class="page">

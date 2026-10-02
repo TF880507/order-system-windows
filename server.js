@@ -7,6 +7,7 @@ const XLSX = require('xlsx');
 const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell, buildOrdersCsv } = require('./schedule');
 const { validateOrderDateRange } = require('./order-range');
 const { matchesLegacyMd5 } = require('./legacy-login');
+const { MAX_PRODUCT_IMPORT_ROWS, createProductTemplateBuffer, createProductsExportBuffer, parseProductImportBuffer } = require('./product-spreadsheet');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -452,14 +453,58 @@ app.get('/api/admin/products/export', requireAuth, requireAdmin, async (_req, re
     SELECT barcode, name, specification, active, created_at AS "createdAt"
     FROM products ORDER BY active DESC, name, id
   `);
-  const csvRows = [
-    ['商品條碼', '商品名稱', '規格／備註', '狀態', '建檔時間'],
-    ...rows.map((product) => [product.barcode, product.name, product.specification, product.active ? '啟用' : '已刪除', product.createdAt?.toISOString?.() || product.createdAt])
-  ];
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="products.csv"');
-  res.send(`\uFEFF${csvRows.map((row) => row.map(csvCell).join(',')).join('\r\n')}`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="products.xlsx"');
+  res.send(createProductsExportBuffer(rows));
 });
+
+app.get('/api/admin/products/import-template', requireAuth, requireAdmin, (_req, res) => {
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="product-import-template.xlsx"');
+  res.send(createProductTemplateBuffer());
+});
+
+app.post('/api/admin/products/import', requireAuth, requireAdmin,
+  express.raw({ type:'application/octet-stream', limit:'10mb' }), async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error:'請選擇要匯入的 CSV、XLS 或 XLSX 檔案' });
+    let products;
+    try {
+      products = parseProductImportBuffer(req.body);
+    } catch (error) {
+      return res.status(400).json({ error:error.message });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const barcodes = products.map((product) => product.barcode);
+      const existingRows = (await client.query('SELECT barcode, active FROM products WHERE barcode=ANY($1::text[]) FOR UPDATE', [barcodes])).rows;
+      const existing = new Set(existingRows.map((product) => product.barcode));
+      await client.query(`
+        INSERT INTO products (barcode,name,specification,active)
+        SELECT * FROM UNNEST($1::text[],$2::text[],$3::text[],$4::boolean[])
+        ON CONFLICT (barcode) DO UPDATE SET
+          name=EXCLUDED.name, specification=EXCLUDED.specification, active=EXCLUDED.active
+      `, [
+        barcodes,
+        products.map((product) => product.name),
+        products.map((product) => product.specification),
+        products.map((product) => product.active)
+      ]);
+      await client.query('COMMIT');
+      const disabled = products.filter((product) => !product.active).length;
+      res.json({
+        total:products.length,
+        inserted:products.length - existing.size,
+        updated:existing.size,
+        disabled,
+        limit:MAX_PRODUCT_IMPORT_ROWS
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error.code === '23505') return res.status(409).json({ error:'匯入資料包含重複商品條碼，請檢查檔案' });
+      throw error;
+    } finally { client.release(); }
+  });
 
 app.get('/api/products/:barcode', requireAuth, async (req, res) => {
   const { rows } = await pool.query('SELECT id, barcode, name, specification FROM products WHERE barcode = $1 AND active = TRUE', [req.params.barcode.trim()]);
