@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setSupportZoom(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " HaoShiJiOrderApp/2.0 AndroidCameraScanner");
+        settings.setUserAgentString(settings.getUserAgentString() + " HaoShiJiOrderApp/3.0 AndroidCameraScanner");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }

@@ -44,6 +44,7 @@ async function api(url, options = {}) {
 
 function showPage(name) {
   scanner.cancel();
+  manualScanner.cancel();
   productScanner.cancel();
   $$('.page').forEach((page) => page.classList.toggle('active', page.id === `page-${name}`));
   $$('#main-nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === name));
@@ -60,6 +61,7 @@ function showWork(name) {
   $$('.work-view').forEach((view) => view.classList.toggle('active', view.id === `work-${name}`));
   $$('.tabs button').forEach((button) => button.classList.toggle('active', button.dataset.work === name));
   if (name === 'scan') setTimeout(focusHardwareScanner, 0);
+  if (name === 'manual') setTimeout(() => $('#manual-barcode').focus(), 0);
   if (name === 'orders') loadOrders('#order-list');
 }
 
@@ -129,7 +131,7 @@ function clearOrderForm(mode) {
   $(`#${mode}-note`).value = '';
   clearMessage(`#${mode}-message`);
   if (mode === 'scan') { scanner.cancel(); $('#scanner-input').value = ''; scanReady(false); focusHardwareScanner(); }
-  if (mode === 'manual') $('#manual-barcode').value = '';
+  if (mode === 'manual') { manualScanner.cancel(); $('#manual-barcode').value = ''; setTimeout(() => $('#manual-barcode').focus(), 0); }
 }
 
 async function loadOrders(targetSelector, limit = 0) {
@@ -409,7 +411,9 @@ const scanner = attachScanner({
     state.scanProduct = product;
     setProduct($('#scan-product'), product);
     scanReady(true);
-    showMessage('#scan-message', `已讀取：${product.barcode}，請確認數量後加入訂單`, 'success');
+    showMessage('#scan-message', `已找到：${product.name}，請輸入數量後按 Enter 完成下單`, 'success');
+    $('#scan-quantity').focus();
+    $('#scan-quantity').select();
   },
   failure(error) { showMessage('#scan-message', error.message + '；請重新掃描或確認商品是否已建檔'); }
 });
@@ -420,7 +424,6 @@ $('#scanner-input').addEventListener('blur', () => {
   $('#scan-status').textContent = '已暫停接收，點「繼續掃描」';
 });
 $('#scan-resume').addEventListener('click', () => scanner.focus());
-$('#scan-lookup').addEventListener('click', () => { scanner.cancel(); scanner.receive(); });
 $('#scan-zone').addEventListener('click', (event) => { if (scanPlatform !== 'android' && !event.target.closest('input,button,textarea')) scanner.focus(); });
 $('#camera-scan-open').addEventListener('click', () => {
   if (!hasNativeAndroidScanner) {
@@ -461,8 +464,47 @@ $('#scan-form').addEventListener('submit', async (event) => {
   }
 });
 
-$('#manual-form').addEventListener('submit', async (event) => { event.preventDefault(); try { if (!state.manualProduct || state.manualProduct.barcode !== $('#manual-barcode').value.trim()) await lookupProduct($('#manual-barcode').value, 'manual'); await createSingleItemOrder('manual'); } catch (error) { showMessage('#manual-message', error.message); } });
-$('#manual-lookup').addEventListener('click', async () => { try { await lookupProduct($('#manual-barcode').value, 'manual'); } catch (error) { state.manualProduct = null; setProduct($('#manual-product'), null, '輸入條碼後查詢商品'); showMessage('#manual-message', error.message); } });
+let manualSaving = false;
+function manualActive() {
+  return Boolean(state.user && !manualSaving && $('#page-workspace').classList.contains('active') && $('#work-manual').classList.contains('active'));
+}
+const manualScanner = attachScanner({
+  input: $('#manual-barcode'),
+  active: manualActive,
+  delay: 650,
+  invalidate() {
+    state.manualProduct = null;
+    setProduct($('#manual-product'), null, '正在等待完整商品條碼');
+    clearMessage('#manual-message');
+  },
+  lookup: (barcode) => api(`/api/products/${encodeURIComponent(barcode)}`),
+  success(product) {
+    state.manualProduct = product;
+    setProduct($('#manual-product'), product);
+    showMessage('#manual-message', `已找到：${product.name}，請輸入數量後按 Enter 完成下單`, 'success');
+    $('#manual-quantity').focus();
+    $('#manual-quantity').select();
+  },
+  failure(error) {
+    state.manualProduct = null;
+    setProduct($('#manual-product'), null, '查無商品');
+    showMessage('#manual-message', error.message + '；請確認條碼或商品是否已建檔');
+  }
+});
+$('#manual-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (manualSaving) return;
+  const barcode = $('#manual-barcode').value.trim();
+  if (!state.manualProduct || state.manualProduct.barcode !== barcode) {
+    await manualScanner.receive();
+    if (!state.manualProduct || state.manualProduct.barcode !== barcode) return;
+  }
+  manualSaving = true;
+  manualScanner.cancel();
+  try { await createSingleItemOrder('manual'); }
+  catch (error) { showMessage('#manual-message', error.message); }
+  finally { manualSaving = false; }
+});
 $('#scan-clear').addEventListener('click', () => clearOrderForm('scan'));
 $('#history-order-form').addEventListener('submit', (event) => {
   event.preventDefault();

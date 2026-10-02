@@ -29,13 +29,20 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import com.google.zxing.BinaryBitmap;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.DecodeHintType;
+import com.google.zxing.LuminanceSource;
 import com.google.zxing.MultiFormatReader;
 import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
+import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ScannerActivity extends Activity {
@@ -57,7 +64,31 @@ public class ScannerActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        configureBarcodeReader();
         buildInterface();
+    }
+
+    private void configureBarcodeReader() {
+        List<BarcodeFormat> formats = Arrays.asList(
+            BarcodeFormat.QR_CODE,
+            BarcodeFormat.EAN_13,
+            BarcodeFormat.EAN_8,
+            BarcodeFormat.UPC_A,
+            BarcodeFormat.UPC_E,
+            BarcodeFormat.CODE_39,
+            BarcodeFormat.CODE_93,
+            BarcodeFormat.CODE_128,
+            BarcodeFormat.ITF,
+            BarcodeFormat.CODABAR,
+            BarcodeFormat.DATA_MATRIX,
+            BarcodeFormat.PDF_417,
+            BarcodeFormat.AZTEC
+        );
+        Map<DecodeHintType, Object> hints = new EnumMap<DecodeHintType, Object>(DecodeHintType.class);
+        hints.put(DecodeHintType.POSSIBLE_FORMATS, formats);
+        hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
+        hints.put(DecodeHintType.CHARACTER_SET, "UTF-8");
+        barcodeReader.setHints(hints);
     }
 
     private void buildInterface() {
@@ -68,7 +99,7 @@ public class ScannerActivity extends Activity {
         root.addView(new ScanOverlay(this), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView instruction = new TextView(this);
-        instruction.setText("將商品條碼或 QR Code 對準掃描框\n辨識成功後會自動返回訂單畫面");
+        instruction.setText("將商品條碼或 QR Code 對準掃描框\n支援 EAN-13；請保持穩定並避免反光");
         instruction.setTextColor(Color.WHITE);
         instruction.setTextSize(18);
         instruction.setGravity(Gravity.CENTER);
@@ -155,12 +186,17 @@ public class ScannerActivity extends Activity {
     private android.util.Size chooseSize(android.util.Size[] sizes) {
         if (sizes == null || sizes.length == 0) return new android.util.Size(1280, 720);
         android.util.Size best = sizes[0];
-        long bestArea = 0;
+        long targetArea = 1280L * 720L;
+        long bestScore = Long.MAX_VALUE;
         for (android.util.Size size : sizes) {
             long area = (long) size.getWidth() * size.getHeight();
-            if (size.getWidth() <= 1920 && size.getHeight() <= 1080 && area > bestArea) {
+            if (size.getWidth() <= 1920 && size.getHeight() <= 1080) {
+                long score = Math.abs(area - targetArea);
+                long ratioError = Math.abs((long) size.getWidth() * 9L - (long) size.getHeight() * 16L);
+                score += ratioError * 100L;
+                if (score >= bestScore) continue;
                 best = size;
-                bestArea = area;
+                bestScore = score;
             }
         }
         return best;
@@ -175,7 +211,10 @@ public class ScannerActivity extends Activity {
             CaptureRequest.Builder request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             request.addTarget(previewSurface);
             request.addTarget(imageReader.getSurface());
+            request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
             request.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            request.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+            request.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO);
             camera.createCaptureSession(Arrays.asList(previewSurface, imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
                 @Override public void onConfigured(CameraCaptureSession captureSession) {
                     session = captureSession;
@@ -200,12 +239,19 @@ public class ScannerActivity extends Activity {
             int height = image.getHeight();
             int rowStride = plane.getRowStride();
             int pixelStride = plane.getPixelStride();
+            int bufferStart = buffer.position();
             byte[] luminance = new byte[width * height];
             for (int row = 0; row < height; row++) {
-                int rowStart = row * rowStride;
+                int rowStart = bufferStart + row * rowStride;
                 for (int column = 0; column < width; column++) luminance[row * width + column] = buffer.get(rowStart + column * pixelStride);
             }
-            Result result = tryDecode(new PlanarYUVLuminanceSource(luminance, width, height, 0, 0, width, height, false));
+            PlanarYUVLuminanceSource full = new PlanarYUVLuminanceSource(luminance, width, height, 0, 0, width, height, false);
+            Result result = tryDecodeAllOrientations(full);
+            if (result == null && full.isCropSupported()) {
+                int cropLeft = width / 12;
+                int cropTop = height / 6;
+                result = tryDecodeAllOrientations(full.crop(cropLeft, cropTop, width - cropLeft * 2, height - cropTop * 2));
+            }
             if (result != null && !finished) finishWithResult(result);
         } finally {
             image.close();
@@ -214,13 +260,31 @@ public class ScannerActivity extends Activity {
         }
     }
 
-    private Result tryDecode(PlanarYUVLuminanceSource source) {
-        try { return barcodeReader.decodeWithState(new BinaryBitmap(new HybridBinarizer(source))); }
-        catch (Exception ignored) {
-            if (!source.isRotateSupported()) return null;
-            try { return barcodeReader.decodeWithState(new BinaryBitmap(new HybridBinarizer(source.rotateCounterClockwise()))); }
-            catch (Exception ignoredAgain) { return null; }
+    private Result tryDecodeAllOrientations(LuminanceSource source) {
+        LuminanceSource current = source;
+        for (int rotation = 0; rotation < 4; rotation++) {
+            Result result = tryDecode(current);
+            if (result != null) return result;
+            if (!current.isRotateSupported()) break;
+            current = current.rotateCounterClockwise();
         }
+        return null;
+    }
+
+    private Result tryDecode(LuminanceSource source) {
+        Result result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(source)));
+        if (result != null) return result;
+        result = decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(source)));
+        if (result != null) return result;
+        LuminanceSource inverted = source.invert();
+        result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(inverted)));
+        if (result != null) return result;
+        return decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(inverted)));
+    }
+
+    private Result decodeBitmap(BinaryBitmap bitmap) {
+        try { return barcodeReader.decodeWithState(bitmap); }
+        catch (Exception ignored) { barcodeReader.reset(); return null; }
     }
 
     private void finishWithResult(Result result) {

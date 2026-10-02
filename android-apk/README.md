@@ -1,8 +1,8 @@
 # 好市吉 App Android 包裝
 
-這個 APK 使用原生 Android WebView 開啟 `http://72.62.75.119:4000/`。2.0 版加入原生相機掃描，支援 QR Code、EAN、UPC、Code 39、Code 93、Code 128、ITF 與 Codabar；掃描結果會交給和 Windows USB 掃碼器相同的商品查詢及下單流程。CSV 匯出會下載到 Android 的「下載」資料夾。
+這個 APK 使用原生 Android WebView 開啟 `http://72.62.75.119:4000/`。3.0 版改善原生相機在不同方向、反相條碼、螢幕條碼及 EAN-13 商品條碼的辨識；支援 QR Code、EAN、UPC、Code 39、Code 93、Code 128、ITF 與 Codabar。掃描結果會交給和 Windows USB 掃碼器相同的商品查詢及下單流程。CSV 匯出會下載到 Android 的「下載」資料夾。
 
-第一次使用相機掃描時會要求 Android 相機權限。APK 支援 Android 6.0 以上，並沿用 1.0 版簽章，可直接覆蓋更新。
+第一次使用相機掃描時會要求 Android 相機權限。APK 支援 Android 6.0 以上，並沿用既有簽章，可直接覆蓋更新。
 
 APK 套件名稱：`tw.com.isunfar.orderapp`
 
