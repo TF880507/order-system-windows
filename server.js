@@ -20,6 +20,10 @@ const captchaSecret = process.env.CAPTCHA_SECRET || crypto.randomBytes(32).toStr
 const pool = new Pool({ connectionString: databaseUrl });
 
 app.use(express.json({ limit: '100kb' }));
+app.use('/vendor/zxing', express.static(path.join(__dirname, 'node_modules', '@zxing', 'browser', 'umd'), {
+  immutable: true,
+  maxAge: '30d'
+}));
 app.use(express.static(path.join(__dirname, 'public')));
 
 async function initializeDatabase() {

@@ -71,11 +71,11 @@ textarea { min-height:94px; resize:vertical; }
 .scan-zone:focus-within { box-shadow:inset 0 0 0 2px #69728a; }
 .scan-glyph { width:94px; height:94px; display:grid; place-items:center; margin:0 auto 18px; border:2px dashed #939ba8; border-radius:13px; font-size:42px; }
 .scanner-input-label { max-width:330px; margin:20px auto 0; text-align:left; }
-.android-camera-actions { display:grid; justify-items:center; gap:10px; margin-top:22px; }
-.android-camera-actions small { max-width:440px; color:#737985; line-height:1.55; }
+.camera-actions { display:grid; justify-items:center; gap:10px; margin-top:22px; }
+.camera-actions small { max-width:440px; color:#737985; line-height:1.55; }
 .camera-button { min-width:220px; min-height:52px; font-size:20px; }
-.platform-android #hardware-scanner-actions { display:none; }
-.platform-android .scan-zone { background:#f6f8fc; }
+.platform-android-app #hardware-scanner-actions,.platform-mobile-web #hardware-scanner-actions { display:none; }
+.platform-android-app .scan-zone,.platform-mobile-web .scan-zone { background:#f6f8fc; }
 .order-form { padding:20px; }
 .product-preview { margin:0 0 12px; padding:13px; border:1px solid #dfe3e8; border-radius:8px; background:#f7f8fa; }
 .product-preview.empty { color:#9299a4; }
@@ -159,6 +159,15 @@ textarea { min-height:94px; resize:vertical; }
 .detail-note { min-width:150px; margin:0; padding:7px 8px; }
 .original-quantity { display:block; margin-top:3px; color:#a15c00; font-size:14px; }
 .detail-modal > .message { margin:12px 20px 0; }
+.camera-scanner-dialog { width:min(720px,100%); overflow:hidden; }
+.camera-preview { position:relative; min-height:320px; overflow:hidden; background:#111827; }
+.camera-preview video { display:block; width:100%; height:min(62vh,520px); object-fit:cover; }
+.camera-guide { position:absolute; inset:50% auto auto 50%; width:min(78%,520px); height:min(38%,210px); border:4px solid rgba(255,255,255,.92); border-radius:16px; box-shadow:0 0 0 999px rgba(0,0,0,.22); transform:translate(-50%,-50%); }
+.camera-guide::before,.camera-guide::after { position:absolute; content:''; left:12%; right:12%; height:2px; background:rgba(255,255,255,.65); }
+.camera-guide::before { top:38%; }
+.camera-guide::after { bottom:38%; }
+.camera-scanner-status { padding:14px 20px 0; text-align:center; }
+.camera-scanner-actions { display:flex; justify-content:center; padding:14px 20px 20px; }
 .message { margin-top:12px; padding:10px 12px; border-radius:7px; font-size:17px; }
 .message.error { background:#fff0f0; color:#b42318; }
 .message.success { background:#eaf8ef; color:#137a45; }
@@ -187,6 +196,9 @@ textarea { min-height:94px; resize:vertical; }
   .filter-actions .button { flex:1; }
   .modal-backdrop { padding:8px; }
   .detail-modal { max-height:calc(100vh - 16px); }
+  .camera-scanner-dialog { max-height:calc(100dvh - 16px); }
+  .camera-preview { min-height:280px; }
+  .camera-preview video { height:min(64dvh,520px); }
   .scan-zone { min-height:260px; border-right:0; border-bottom:1px solid #e4e7eb; }
   .page-heading { align-items:center; }
 }

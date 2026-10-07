@@ -4,37 +4,71 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
   ? window.location.pathname.replace(/\/$/, '')
   : window.location.pathname.slice(0, window.location.pathname.lastIndexOf('/'));
-const scanPlatform = /Android/i.test(navigator.userAgent) || Boolean(window.AndroidScanner)
-  ? 'android'
-  : (/Windows/i.test(navigator.userAgent) ? 'windows' : 'desktop');
-const hasNativeAndroidScanner = scanPlatform === 'android' && typeof window.AndroidScanner?.scanBarcode === 'function';
+const scannerEnvironment = window.DeviceScanner.detectScanEnvironment({
+  userAgent: navigator.userAgent,
+  platformName: navigator.platform,
+  maxTouchPoints: navigator.maxTouchPoints,
+  hasNativeScanner: typeof window.AndroidScanner?.scanBarcode === 'function',
+  isSecureContext: window.isSecureContext,
+  hasMediaDevices: Boolean(navigator.mediaDevices?.getUserMedia)
+});
+const scanPlatform = scannerEnvironment.platform;
+const hasNativeAndroidScanner = scannerEnvironment.hasNativeScanner;
 let currentCaptchaId = '';
 document.documentElement.classList.add(`platform-${scanPlatform}`);
 
+const browserCameraScanner = window.CameraScanner.createBrowserCameraScanner({
+  video: $('#browser-camera-video'),
+  onStatus(message) { $('#camera-scanner-status').textContent = message; },
+  async onResult(value, format) {
+    closeBrowserCamera(false);
+    await handleScannedBarcode(value, format);
+  },
+  onError(error) {
+    const message = window.DeviceScanner.describeCameraError(error);
+    $('#camera-scanner-status').textContent = message;
+  }
+});
+
 function focusHardwareScanner() {
-  if (scanPlatform !== 'android') scanner.focus();
+  if (scannerEnvironment.useHardwareInput) scanner.focus();
+}
+
+function closeBrowserCamera(restoreStatus = true) {
+  browserCameraScanner.stop();
+  $('#camera-scanner-modal').classList.add('hidden');
+  if (restoreStatus && scannerEnvironment.canUseCamera) $('#scan-status').textContent = '相機掃描已就緒';
 }
 
 function configureScannerPlatform() {
   const label = $('#platform-scanner-label');
   const caption = $('#scan-entry-caption');
   const instruction = $('#scan-device-instruction');
-  const cameraActions = $('#android-camera-actions');
+  const cameraActions = $('#camera-actions');
+  const cameraButton = $('#camera-scan-open');
   cameraActions.querySelector('small').textContent = '支援 EAN-13、EAN-8、UPC-A、Code 128、Code 39、ITF-14、GS1-128 與 QR Code。';
-  if (scanPlatform === 'android') {
-    label.textContent = hasNativeAndroidScanner ? 'Android 相機掃描' : 'Android 掃碼';
-    caption.textContent = hasNativeAndroidScanner ? '開啟裝置相機掃描商品條碼或 QR Code' : '請使用 Android App 開啟相機掃描';
-    instruction.textContent = hasNativeAndroidScanner
-      ? '按下按鈕開啟裝置鏡頭，將商品條碼或 QR Code 對準掃描框。'
-      : '目前瀏覽器無法直接使用相機，請改用好市吉 Android App。';
-    cameraActions.classList.remove('hidden');
-    $('#camera-scan-open').disabled = !hasNativeAndroidScanner;
-    $('#scan-status').textContent = hasNativeAndroidScanner ? '相機掃描已就緒' : '請使用 Android App';
+  cameraActions.classList.remove('hidden');
+  cameraButton.disabled = !scannerEnvironment.canUseCamera;
+
+  if (scanPlatform === 'android-app') {
+    label.textContent = 'Android App 相機掃描';
+    caption.textContent = '使用 App 原生相機掃描商品條碼或 QR Code';
+    instruction.textContent = '按下按鈕開啟裝置鏡頭，將商品條碼或 QR Code 對準掃描框。';
+    cameraButton.textContent = '開啟相機掃描';
+  } else if (scanPlatform === 'mobile-web') {
+    label.textContent = '手機網頁相機掃描';
+    caption.textContent = '直接使用手機瀏覽器相機掃描';
+    instruction.textContent = scannerEnvironment.canUseWebCamera
+      ? '按下按鈕並允許相機權限，掃描後會自動查詢商品並跳到數量欄位。'
+      : scannerEnvironment.cameraUnavailableReason;
+    cameraButton.textContent = '開啟手機相機掃描';
   } else {
-    label.textContent = scanPlatform === 'windows' ? 'Windows USB 掃碼輸入' : 'USB 掃碼輸入';
-    caption.textContent = '使用 USB 掃碼器快速帶入商品';
-    instruction.textContent = '請使用英文輸入法。掃碼後自動查詢商品；填寫數量或備註後，點「繼續掃描」接收下一筆。';
+    label.textContent = scanPlatform === 'windows' ? 'Windows 掃碼輸入' : '電腦掃碼輸入';
+    caption.textContent = '使用 USB 掃碼器或外接鏡頭快速帶入商品';
+    instruction.textContent = 'USB 掃碼器可直接掃描；也可按「開啟相機掃描」使用電腦鏡頭。掃描後會自動查詢商品。';
+    cameraButton.textContent = '使用相機掃描';
   }
+  $('#scan-status').textContent = scannerEnvironment.canUseCamera ? '相機掃描已就緒' : 'USB 掃碼已就緒';
 }
 
 async function api(url, options = {}) {
@@ -64,6 +98,7 @@ async function loadCaptcha() {
 }
 
 function showPage(name) {
+  closeBrowserCamera(false);
   scanner.cancel();
   manualScanner.cancel();
   productScanner.cancel();
@@ -456,20 +491,47 @@ $('#scanner-input').addEventListener('blur', () => {
   $('#scan-status').textContent = '已暫停接收，點「繼續掃描」';
 });
 $('#scan-resume').addEventListener('click', () => scanner.focus());
-$('#scan-zone').addEventListener('click', (event) => { if (scanPlatform !== 'android' && !event.target.closest('input,button,textarea')) scanner.focus(); });
-$('#camera-scan-open').addEventListener('click', () => {
-  if (!hasNativeAndroidScanner) {
-    showMessage('#scan-message', '請使用好市吉 Android App 才能啟動裝置相機掃描');
-    return;
-  }
-  $('#scan-status').textContent = '相機掃描中';
-  clearMessage('#scan-message');
-  window.AndroidScanner.scanBarcode();
+$('#scan-zone').addEventListener('click', (event) => {
+  if (scannerEnvironment.useHardwareInput && !event.target.closest('input,button,textarea')) scanner.focus();
 });
-window.handleNativeBarcodeScan = async (value, format) => {
+
+async function handleScannedBarcode(value, format) {
   showWork('scan');
   $('#scan-status').textContent = `已掃描${format ? `（${format}）` : ''}`;
   await scanner.submit(value);
+}
+
+$('#camera-scan-open').addEventListener('click', async () => {
+  clearMessage('#scan-message');
+  $('#scan-status').textContent = '相機掃描中';
+  if (hasNativeAndroidScanner) {
+    window.AndroidScanner.scanBarcode();
+    return;
+  }
+  if (!scannerEnvironment.canUseWebCamera) {
+    showMessage('#scan-message', scannerEnvironment.cameraUnavailableReason || '此裝置無法使用相機掃描');
+    return;
+  }
+  $('#camera-scanner-modal').classList.remove('hidden');
+  $('#camera-scanner-status').textContent = '正在啟動相機…';
+  try {
+    await browserCameraScanner.start();
+  } catch (error) {
+    const message = window.DeviceScanner.describeCameraError(error);
+    $('#camera-scanner-status').textContent = message;
+    $('#scan-status').textContent = '相機啟動失敗';
+  }
+});
+$('#camera-scanner-close').addEventListener('click', () => closeBrowserCamera());
+$('#camera-scanner-cancel').addEventListener('click', () => closeBrowserCamera());
+$('#camera-scanner-modal').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) closeBrowserCamera();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('#camera-scanner-modal').classList.contains('hidden')) closeBrowserCamera();
+});
+window.handleNativeBarcodeScan = async (value, format) => {
+  await handleScannedBarcode(value, format);
 };
 window.handleNativeBarcodeScanError = (message) => {
   $('#scan-status').textContent = '相機掃描已停止';
