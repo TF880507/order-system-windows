@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], editingVendorId:null, vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
+const state = { user: null, scanProduct: null, manualProduct: null, draftItems:[], nextDraftItemId:1, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], editingVendorId:null, vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -114,6 +114,12 @@ function showPage(name) {
 }
 
 function showWork(name) {
+  if (state.user?.role === 'admin') {
+    showPage('admin-orders');
+    showToast('系統管理員僅能管理與查詢，不能新增訂單');
+    return;
+  }
+  if (name === 'manual') name = 'scan';
   showPage('workspace');
   $$('.work-view').forEach((view) => view.classList.toggle('active', view.id === `work-${name}`));
   $$('.tabs button').forEach((button) => button.classList.toggle('active', button.dataset.work === name));
@@ -144,6 +150,11 @@ function setAuthenticatedUi(user) {
   $('#logout-button').classList.toggle('hidden', !user);
   $('#login-nav').classList.toggle('hidden', Boolean(user));
   const isAdmin = user?.role === 'admin';
+  $('#workspace-nav').classList.toggle('hidden', isAdmin);
+  $('#home-create-order').classList.toggle('hidden', isAdmin);
+  $('#home-scan-entry').classList.toggle('hidden', isAdmin);
+  $('#home-manual-entry').classList.add('hidden');
+  $('#manual-work-tab').classList.add('hidden');
   $('#admin-orders-nav').classList.toggle('hidden', !isAdmin);
   $('#vendors-nav').classList.toggle('hidden', !isAdmin);
   $('#products-nav').classList.toggle('hidden', !isAdmin);
@@ -171,14 +182,35 @@ async function lookupProduct(barcode, mode) {
   return product;
 }
 
-async function createSingleItemOrder(mode) {
+function addItemToDraft(mode) {
   const product = state[`${mode}Product`];
-  if (!product) throw new Error('請先掃描或查詢商品');
+  if (!product) throw new Error('請先掃描商品');
   const quantity = Number($(`#${mode}-quantity`).value);
-  const note = $(`#${mode}-note`).value;
-  const order = await api('/api/orders', { method:'POST', body:JSON.stringify({ items:[{ barcode:product.barcode, quantity, note }] }) });
-  showToast(`訂單 ${order.orderNumber} 已建立`);
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new Error('商品數量必須為 1 至 9999');
+  const note = $(`#${mode}-note`).value.trim();
+  const existing = state.draftItems.find((item) => item.barcode === product.barcode && item.note === note && item.quantity + quantity <= 9999);
+  if (existing) existing.quantity += quantity;
+  else {
+    if (state.draftItems.length >= 500) throw new Error('一張訂單最多 500 個品項');
+    state.draftItems.push({ id:state.nextDraftItemId++, barcode:product.barcode, name:product.name, specification:product.specification || '', quantity, note });
+  }
+  renderDraftOrder();
+  showToast(`已加入：${product.name}（尚未產生訂單編號）`);
   clearOrderForm(mode);
+}
+
+function renderDraftOrder() {
+  const body = $('#draft-order-items');
+  const totalQuantity = state.draftItems.reduce((sum, item) => sum + item.quantity, 0);
+  body.innerHTML = state.draftItems.length ? state.draftItems.map((item, index) => `<tr><td>${index + 1}</td><td><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.barcode)} · ${escapeHtml(item.specification || '無規格')}</small></td><td>${item.quantity}</td><td>${escapeHtml(item.note || '—')}</td><td><button class="text-button danger" data-remove-draft-item="${item.id}" type="button">移除</button></td></tr>`).join('') : '<tr><td colspan="5" class="empty">尚未加入商品，掃描後輸入數量並加入訂單</td></tr>';
+  $('#draft-order-summary').textContent = `共 ${state.draftItems.length} 項｜總數量 ${totalQuantity}`;
+  $('#draft-order-submit').disabled = !state.draftItems.length || draftSaving;
+  $('#draft-order-clear').disabled = !state.draftItems.length || draftSaving;
+}
+
+function clearDraftOrder() {
+  state.draftItems = [];
+  renderDraftOrder();
 }
 
 function clearOrderForm(mode) {
@@ -437,9 +469,11 @@ $('#login-form').addEventListener('submit', async (event) => {
   const submitButton = $('#login-submit');
   submitButton.disabled = true;
   try {
-    setAuthenticatedUi(await api('/api/login', { method:'POST', body:JSON.stringify({ username:$('#login-username').value, password:$('#login-password').value, captchaId:currentCaptchaId, captchaAnswer:$('#login-captcha').value }) }));
+    const user = await api('/api/login', { method:'POST', body:JSON.stringify({ username:$('#login-username').value, password:$('#login-password').value, captchaId:currentCaptchaId, captchaAnswer:$('#login-captcha').value }) });
+    setAuthenticatedUi(user);
     currentCaptchaId = '';
-    showWork('scan');
+    if (user.role === 'admin') showPage('admin-orders');
+    else showWork('scan');
   } catch (error) {
     showMessage('#login-error', error.message);
     await loadCaptcha();
@@ -452,6 +486,7 @@ $('#captcha-refresh').addEventListener('click', () => loadCaptcha());
 $('#logout-button').addEventListener('click', async () => {
   try { await api('/api/logout', { method:'POST' }); } catch (_) {}
   clearOrderForm('scan'); clearOrderForm('manual');
+  clearDraftOrder();
   setAuthenticatedUi(null);
   showPage('login');
   closeOrderDetail();
@@ -478,7 +513,7 @@ const scanner = attachScanner({
     state.scanProduct = product;
     setProduct($('#scan-product'), product);
     scanReady(true);
-    showMessage('#scan-message', `已找到：${product.name}，請輸入數量後按 Enter 完成下單`, 'success');
+    showMessage('#scan-message', `已找到：${product.name}，請輸入數量後按 Enter 加入本次訂單`, 'success');
     $('#scan-quantity').focus();
     $('#scan-quantity').select();
   },
@@ -548,7 +583,11 @@ $('#scan-form').addEventListener('submit', async (event) => {
   scanner.cancel();
   scanReady(false);
   $('#scanner-input').disabled = true;
-  try { await createSingleItemOrder('scan'); }
+  try {
+    addItemToDraft('scan');
+    if (hasNativeAndroidScanner) window.setTimeout(() => window.AndroidScanner.scanBarcode(), 180);
+    else if (scanPlatform === 'mobile-web' && scannerEnvironment.canUseWebCamera) window.setTimeout(() => $('#camera-scan-open').click(), 180);
+  }
   catch (error) { showMessage('#scan-message', error.message); }
   finally {
     scanSaving = false;
@@ -575,7 +614,7 @@ const manualScanner = attachScanner({
   success(product) {
     state.manualProduct = product;
     setProduct($('#manual-product'), product);
-    showMessage('#manual-message', `已找到：${product.name}，請輸入數量後按 Enter 完成下單`, 'success');
+    showMessage('#manual-message', `已找到：${product.name}，請輸入數量後加入本次訂單`, 'success');
     $('#manual-quantity').focus();
     $('#manual-quantity').select();
   },
@@ -595,11 +634,40 @@ $('#manual-form').addEventListener('submit', async (event) => {
   }
   manualSaving = true;
   manualScanner.cancel();
-  try { await createSingleItemOrder('manual'); }
+  try { addItemToDraft('manual'); }
   catch (error) { showMessage('#manual-message', error.message); }
   finally { manualSaving = false; }
 });
 $('#scan-clear').addEventListener('click', () => clearOrderForm('scan'));
+let draftSaving = false;
+$('#draft-order-items').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-remove-draft-item]');
+  if (!button || draftSaving) return;
+  const id = Number(button.dataset.removeDraftItem);
+  state.draftItems = state.draftItems.filter((item) => item.id !== id);
+  renderDraftOrder();
+});
+$('#draft-order-clear').addEventListener('click', () => {
+  if (state.draftItems.length && window.confirm('確定要清空本次尚未完成的訂單嗎？')) clearDraftOrder();
+});
+$('#draft-order-submit').addEventListener('click', async () => {
+  if (draftSaving || !state.draftItems.length) return;
+  draftSaving = true;
+  renderDraftOrder();
+  clearMessage('#draft-order-message');
+  try {
+    const order = await api('/api/orders', { method:'POST', body:JSON.stringify({ items:state.draftItems.map(({ barcode, quantity, note }) => ({ barcode, quantity, note })) }) });
+    clearDraftOrder();
+    showMessage('#draft-order-message', `整張訂單已完成，訂單編號：${order.orderNumber}`, 'success');
+    showToast(`訂單 ${order.orderNumber} 已建立`);
+    loadOrders('#recent-orders', 5);
+  } catch (error) {
+    showMessage('#draft-order-message', error.message);
+  } finally {
+    draftSaving = false;
+    renderDraftOrder();
+  }
+});
 $('#history-order-form').addEventListener('submit', (event) => {
   event.preventDefault();
   state.memberOrderMode = 'history';
@@ -922,5 +990,6 @@ historyStart.setMonth(historyStart.getMonth() - 1);
 $('#history-start-date').value = historyStart.toLocaleDateString('en-CA');
 $('#history-end-date').value = today;
 $('#admin-export-date').value = today;
+renderDraftOrder();
 configureScannerPlatform();
 api('/api/me').then((user) => { setAuthenticatedUi(user); loadOrders('#recent-orders', 5); }).catch(() => setAuthenticatedUi(null));

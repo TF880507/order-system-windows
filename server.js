@@ -721,8 +721,10 @@ async function createOrder(userId, items) {
 }
 
 app.post('/api/orders', requireAuth, async (req, res) => {
+  if (req.user.role === 'admin') return res.status(403).json({ error: '系統管理員僅能管理與查詢，不能新增訂單' });
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   if (!items.length) return res.status(400).json({ error: '訂單至少需要一項商品' });
+  if (items.length > 500) return res.status(400).json({ error: '一張訂單最多 500 個品項' });
   try { res.status(201).json(await createOrder(req.user.id, items)); }
   catch (error) {
     if (error.code === '23505' && error.constraint === 'orders_order_number_key') return res.status(409).json({ error:'訂單編號建立衝突，請重新送出一次' });
