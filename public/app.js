@@ -1,4 +1,4 @@
-const state = { user: null, scanProduct: null, manualProduct: null, draftItems:[], nextDraftItemId:1, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], editingVendorId:null, vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
+const state = { user: null, scanProduct: null, manualProduct: null, draftItems:[], nextDraftItemId:1, products: [], editingProductId: null, productPage:1, productTotalPages:1, vendors:[], editingVendorId:null, vendorPage:1, vendorTotalPages:1, adminOrders:[], adminOrderPage:1, adminOrderTotalPages:1, adminOrder:null, adminOrderVendor:'', memberOrderPage:1, memberOrderTotalPages:1, memberOrderMode:'month' };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const appBase = window.location.pathname.endsWith('/')
@@ -42,7 +42,6 @@ function closeBrowserCamera(restoreStatus = true) {
 
 function configureScannerPlatform() {
   const label = $('#platform-scanner-label');
-  const caption = $('#scan-entry-caption');
   const instruction = $('#scan-device-instruction');
   const cameraActions = $('#camera-actions');
   const cameraButton = $('#camera-scan-open');
@@ -52,19 +51,16 @@ function configureScannerPlatform() {
 
   if (scanPlatform === 'android-app') {
     label.textContent = 'Android App 相機掃描';
-    caption.textContent = '使用 App 原生相機掃描商品條碼或 QR Code';
     instruction.textContent = '按下按鈕開啟裝置鏡頭，將商品條碼或 QR Code 對準掃描框。';
     cameraButton.textContent = '開啟相機掃描';
   } else if (scanPlatform === 'mobile-web') {
     label.textContent = '手機網頁相機掃描';
-    caption.textContent = '直接使用手機瀏覽器相機掃描';
     instruction.textContent = scannerEnvironment.canUseWebCamera
       ? '按下按鈕並允許相機權限，掃描後會自動查詢商品並跳到數量欄位。'
       : scannerEnvironment.cameraUnavailableReason;
     cameraButton.textContent = '開啟手機相機掃描';
   } else {
     label.textContent = scanPlatform === 'windows' ? 'Windows 掃碼輸入' : '電腦掃碼輸入';
-    caption.textContent = '使用 USB 掃碼器或外接鏡頭快速帶入商品';
     instruction.textContent = 'USB 掃碼器可直接掃描；也可按「開啟相機掃描」使用電腦鏡頭。掃描後會自動查詢商品。';
     cameraButton.textContent = '使用相機掃描';
   }
@@ -101,12 +97,10 @@ function showPage(name) {
   closeBrowserCamera(false);
   scanner.cancel();
   manualScanner.cancel();
-  productScanner.cancel();
   $$('.page').forEach((page) => page.classList.toggle('active', page.id === `page-${name}`));
   $$('#main-nav button').forEach((button) => button.classList.toggle('active', button.dataset.page === name));
-  if (name === 'home') loadOrders('#recent-orders', 5);
   if (name === 'workspace') setTimeout(focusHardwareScanner, 0);
-  if (name === 'products') { loadProducts(); setTimeout(() => productScanner.focus(), 0); }
+  if (name === 'products') loadProducts();
   if (name === 'vendors') loadVendors();
   if (name === 'schedule') loadSchedule();
   if (name === 'admin-orders') loadAdminOrders();
@@ -146,14 +140,12 @@ function clearMessage(selector) { $(selector).className = 'message hidden'; }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char])); }
 function setAuthenticatedUi(user) {
   state.user = user;
+  document.body.classList.toggle('logged-out', !user);
   $('#user-name').textContent = user ? (user.display_name || user.displayName) : '';
   $('#logout-button').classList.toggle('hidden', !user);
   $('#login-nav').classList.toggle('hidden', Boolean(user));
   const isAdmin = user?.role === 'admin';
-  $('#workspace-nav').classList.toggle('hidden', isAdmin);
-  $('#home-create-order').classList.toggle('hidden', isAdmin);
-  $('#home-scan-entry').classList.toggle('hidden', isAdmin);
-  $('#home-manual-entry').classList.add('hidden');
+  $('#workspace-nav').classList.toggle('hidden', !user || isAdmin);
   $('#manual-work-tab').classList.add('hidden');
   $('#admin-orders-nav').classList.toggle('hidden', !isAdmin);
   $('#vendors-nav').classList.toggle('hidden', !isAdmin);
@@ -169,7 +161,7 @@ function formatDateTime(value) {
 
 function setProduct(target, product, emptyText = '尚未讀取商品') {
   target.classList.toggle('empty', !product);
-  target.innerHTML = product ? `<b>${escapeHtml(product.name)}</b><small>${escapeHtml(product.barcode)} · ${escapeHtml(product.specification || '無規格')}</small>` : emptyText;
+  target.innerHTML = product ? `<b>${escapeHtml(product.barcode)}</b><small>${escapeHtml(product.name)}${product.specification ? ` · ${escapeHtml(product.specification)}` : ''}</small>` : emptyText;
 }
 
 async function lookupProduct(barcode, mode) {
@@ -256,39 +248,33 @@ async function loadOrders(targetSelector, limit = 0) {
 async function loadAdminOrders() {
   if (!state.user || state.user.role !== 'admin') return;
   const target = $('#admin-order-list');
-  target.innerHTML = '<tr><td colspan="8" class="empty">載入中</td></tr>';
-  const params = new URLSearchParams({ page:String(state.adminOrderPage), pageSize:'50' });
-  const filters = {
-    from:$('#admin-order-from').value,
-    to:$('#admin-order-to').value,
-    query:$('#admin-order-query').value.trim(),
-    queryField:$('#admin-order-query-field').value,
-    status:$('#admin-order-status').value
-  };
-  Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+  target.innerHTML = '<tr><td colspan="4" class="empty">載入中</td></tr>';
+  const currentDate = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Taipei' });
+  const params = new URLSearchParams({ page:String(state.adminOrderPage), pageSize:'10' });
+  if (state.adminOrderVendor) {
+    params.set('query', state.adminOrderVendor);
+    params.set('queryField', 'vendor');
+  } else {
+    params.set('from', currentDate);
+    params.set('to', currentDate);
+  }
   try {
-    const [summary, data] = await Promise.all([api('/api/admin/orders/summary'), api(`/api/admin/orders?${params}`)]);
-    $('#admin-stat-today').textContent = Number(summary.todayTotal).toLocaleString();
-    $('#admin-stat-total').textContent = Number(summary.total).toLocaleString();
-    $('#admin-stat-pending').textContent = Number(summary.pending).toLocaleString();
-    $('#admin-stat-closed').textContent = Number(summary.closed).toLocaleString();
+    const data = await api(`/api/admin/orders?${params}`);
     state.adminOrders = data.items;
     state.adminOrderPage = data.page;
     state.adminOrderTotalPages = data.totalPages;
     target.innerHTML = data.items.length ? data.items.map((order) => `<tr>
       <td><b>${escapeHtml(order.businessDate)}</b></td>
-      <td>#${escapeHtml(order.orderNumber)}</td>
-      <td><button class="member-link" data-filter-member="${escapeHtml(order.memberName)}" type="button"><b>${escapeHtml(order.memberName)}</b><small>${escapeHtml(order.memberUsername)}</small></button></td>
-      <td>${escapeHtml(formatDateTime(order.createdAt))}</td><td>${order.itemCount} 項</td><td>${order.totalQuantity}</td>
-      <td><span class="status-tag ${order.editable ? '' : 'disabled-tag'}">${order.editable ? '待結單' : '已結單'}</span></td>
+      <td><b>${escapeHtml(order.memberName)}</b><small>${escapeHtml(order.memberUsername)}</small></td>
       <td><button class="text-button" data-view-order="${order.id}" type="button">查看明細</button></td>
-    </tr>`).join('') : '<tr><td colspan="8" class="empty">查無符合的訂單</td></tr>';
+      <td><span class="status-tag ${order.editable ? '' : 'disabled-tag'}">${order.editable ? '未匯出' : '已匯出'}</span></td>
+    </tr>`).join('') : '<tr><td colspan="4" class="empty">查無符合的訂單</td></tr>';
     $('#admin-order-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
     $('#admin-order-page-prev').disabled = data.page <= 1;
     $('#admin-order-page-next').disabled = data.page >= data.totalPages;
     clearMessage('#admin-order-message');
   } catch (error) {
-    target.innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(error.message)}</td></tr>`;
+    target.innerHTML = `<tr><td colspan="4" class="empty">${escapeHtml(error.message)}</td></tr>`;
     showMessage('#admin-order-message', error.message);
   }
 }
@@ -308,14 +294,13 @@ async function openOrderDetail(id) {
       <div><span>客戶名稱</span><b>${escapeHtml(order.memberName)}</b><small>${escapeHtml(order.memberUsername)}</small></div>
       <div><span>營業日期</span><b>${escapeHtml(order.businessDate)}</b><small>${escapeHtml(formatDateTime(order.createdAt))}</small></div>
       <div><span>客戶資料</span><b>${escapeHtml(order.phone || '未提供電話')}</b><small>統編：${escapeHtml(order.taxId || '—')}　客戶序號：${escapeHtml(order.customerCode || '—')}</small></div>
-      <div><span>訂單狀態</span><b>${order.editable ? '待結單' : '已結單'}</b><small>${order.editable ? '可修改數量、備註或刪除品項' : '已鎖定，不可修改'}</small></div>`;
+      <div><span>訂單狀態</span><b>${order.editable ? '未匯出' : '已匯出'}</b><small>${order.editable ? '可勾選刪除品項' : '已鎖定，不可修改'}</small></div>`;
     $('#order-detail-items').innerHTML = order.items.length ? order.items.map((item) => `<tr>
       <td><input class="detail-item-check" type="checkbox" value="${item.id}" aria-label="選取 ${escapeHtml(item.name)}" ${order.editable && state.user.role === 'admin' ? '' : 'disabled'}></td>
       <td>${escapeHtml(item.barcode)}</td><td><b>${escapeHtml(item.name)}</b></td><td>${escapeHtml(item.specification || '—')}</td>
-      <td><input class="detail-quantity" data-item-quantity="${item.id}" type="number" min="1" max="9999" value="${item.quantity}" ${order.editable ? '' : 'disabled'}>${item.originalQuantity && item.originalQuantity !== String(item.quantity) ? `<small class="original-quantity">原始：${escapeHtml(item.originalQuantity)}</small>` : ''}</td>
-      <td><input class="detail-note" data-item-note="${item.id}" maxlength="500" value="${escapeHtml(item.note || '')}" placeholder="備註" ${order.editable ? '' : 'disabled'}></td>
-      <td class="row-actions"><button class="text-button" data-save-order-item="${item.id}" type="button" ${order.editable ? '' : 'disabled'}>儲存</button><button class="text-button danger" data-delete-order-item="${item.id}" type="button" ${order.editable ? '' : 'disabled'}>刪除</button></td>
-    </tr>`).join('') : '<tr><td colspan="7" class="empty">此訂單沒有商品明細</td></tr>';
+      <td>${item.quantity}${item.originalQuantity && item.originalQuantity !== String(item.quantity) ? `<small class="original-quantity">原始：${escapeHtml(item.originalQuantity)}</small>` : ''}</td>
+      <td>${escapeHtml(item.note || '—')}</td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty">此訂單沒有商品明細</td></tr>';
     const isAdmin = state.user.role === 'admin';
     $('#order-detail-select-wrap').classList.toggle('hidden', !isAdmin);
     $('#order-detail-delete').classList.toggle('hidden', !isAdmin);
@@ -324,7 +309,6 @@ async function openOrderDetail(id) {
     $('#order-detail-select-all').disabled = !isAdmin || !order.editable || !order.items.length;
     $('#order-detail-select-label').textContent = order.editable ? '全選可刪除品項' : '已結單，品項不可勾選或刪除';
     $('#order-detail-delete').disabled = !isAdmin || !order.editable || !order.items.length;
-    $('#order-detail-delete-order').disabled = !order.editable;
     $('#order-detail-export').href = `${appBase}/api/admin/orders/${order.id}/export`;
     clearMessage('#order-detail-message');
     $('#order-detail-modal').classList.remove('hidden');
@@ -336,7 +320,7 @@ async function loadProducts() {
   if (!state.user || state.user.role !== 'admin') return;
   target.innerHTML = '<tr><td colspan="4" class="empty">載入中</td></tr>';
   try {
-    const data = await api(`/api/products?query=${encodeURIComponent($('#product-search').value.trim())}&queryField=${encodeURIComponent($('#product-search-field').value)}&page=${state.productPage}&pageSize=50`);
+    const data = await api(`/api/products?query=${encodeURIComponent($('#product-search').value.trim())}&queryField=${encodeURIComponent($('#product-search-field').value)}&page=${state.productPage}&pageSize=20`);
     state.products = data.items;
     state.productPage = data.page;
     state.productTotalPages = data.totalPages;
@@ -353,20 +337,20 @@ async function loadVendors() {
   target.innerHTML = '<tr><td colspan="9" class="empty">載入中</td></tr>';
   try {
     const query = encodeURIComponent($('#vendor-search').value.trim());
-    const data = await api(`/api/admin/vendors?query=${query}&page=${state.vendorPage}&pageSize=50`);
+    const data = await api(`/api/admin/vendors?query=${query}&page=${state.vendorPage}&pageSize=10`);
     state.vendors = data.items;
     state.vendorPage = data.page;
     state.vendorTotalPages = data.totalPages;
     target.innerHTML = data.items.length ? data.items.map((vendor) => `<tr>
-      <td><b>${escapeHtml(vendor.displayName)}</b></td>
-      <td>${escapeHtml(vendor.username)}</td>
       <td>${escapeHtml(vendor.customerCode || '—')}</td>
+      <td>${escapeHtml(vendor.username)}</td>
+      <td aria-label="密碼已隱藏">••••••</td>
+      <td><b>${escapeHtml(vendor.displayName)}</b></td>
       <td>${escapeHtml(vendor.phone || '—')}</td>
       <td>${escapeHtml(vendor.taxId || '—')}</td>
-      <td>${Number(vendor.orderCount).toLocaleString()}</td>
-      <td>${escapeHtml(vendor.latestOrderDate || '—')}</td>
-      <td><span class="status-tag${vendor.active ? '' : ' disabled-tag'}">${vendor.active ? '啟用' : '停用'}</span></td>
-      <td class="row-actions"><button class="text-button" data-vendor-orders="${vendor.id}" type="button">訂單</button><button class="text-button" data-edit-vendor="${vendor.id}" type="button">修改</button><button class="text-button${vendor.active ? ' danger' : ''}" data-toggle-vendor="${vendor.id}" type="button">${vendor.active ? '停權' : '復權'}</button></td>
+      <td><button class="text-button" data-vendor-orders="${vendor.id}" type="button">訂單</button></td>
+      <td><button class="text-button" data-edit-vendor="${vendor.id}" type="button">修改</button></td>
+      <td><input class="vendor-suspend-check" data-toggle-vendor="${vendor.id}" type="checkbox" aria-label="停權 ${escapeHtml(vendor.displayName)}" ${vendor.active ? '' : 'checked'}></td>
     </tr>`).join('') : '<tr><td colspan="9" class="empty">查無符合的廠商</td></tr>';
     $('#vendor-page-info').textContent = `共 ${data.total.toLocaleString()} 筆｜第 ${data.page} / ${data.totalPages} 頁`;
     $('#vendor-page-prev').disabled = data.page <= 1;
@@ -445,10 +429,10 @@ async function loadSchedule() {
 function clearProductForm() {
   $('#product-form').reset();
   state.editingProductId = null;
-  $('#product-form-title').textContent = '新增商品';
-  $('#product-save').textContent = '儲存商品';
+  $('#product-form-title').textContent = '編輯商品';
+  $('#product-save').textContent = '儲存修改';
   clearMessage('#product-message');
-  productScanner.focus();
+  $('#product-editor').classList.add('hidden');
 }
 
 function editProduct(id) {
@@ -461,7 +445,8 @@ function editProduct(id) {
   $('#product-name').value = product.name;
   $('#product-specification').value = product.specification || '';
   clearMessage('#product-message');
-  $('#product-name').focus();
+  $('#product-editor').classList.remove('hidden');
+  setTimeout(() => $('#product-name').focus(), 100);
 }
 
 $('#login-form').addEventListener('submit', async (event) => {
@@ -660,7 +645,6 @@ $('#draft-order-submit').addEventListener('click', async () => {
     clearDraftOrder();
     showMessage('#draft-order-message', `整張訂單已完成，訂單編號：${order.orderNumber}`, 'success');
     showToast(`訂單 ${order.orderNumber} 已建立`);
-    loadOrders('#recent-orders', 5);
   } catch (error) {
     showMessage('#draft-order-message', error.message);
   } finally {
@@ -690,15 +674,11 @@ $('#order-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-view-member-order]');
   if (button) openOrderDetail(Number(button.dataset.viewMemberOrder));
 });
-$('#admin-order-filters').addEventListener('submit', (event) => { event.preventDefault(); state.adminOrderPage = 1; loadAdminOrders(); });
-$('#admin-order-reset').addEventListener('click', () => { $('#admin-order-filters').reset(); state.adminOrderPage = 1; loadAdminOrders(); });
 $('#admin-order-page-prev').addEventListener('click', () => { if (state.adminOrderPage > 1) { state.adminOrderPage -= 1; loadAdminOrders(); } });
 $('#admin-order-page-next').addEventListener('click', () => { if (state.adminOrderPage < state.adminOrderTotalPages) { state.adminOrderPage += 1; loadAdminOrders(); } });
 $('#admin-order-list').addEventListener('click', (event) => {
   const detail = event.target.closest('[data-view-order]');
   if (detail) return openOrderDetail(Number(detail.dataset.viewOrder));
-  const member = event.target.closest('[data-filter-member]');
-  if (member) { $('#admin-order-query').value = member.dataset.filterMember; state.adminOrderPage = 1; loadAdminOrders(); }
 });
 $('#order-detail-close').addEventListener('click', closeOrderDetail);
 $('#order-detail-modal').addEventListener('click', (event) => { if (event.target === $('#order-detail-modal')) closeOrderDetail(); });
@@ -716,44 +696,6 @@ $('#order-detail-delete').addEventListener('click', async () => {
     loadAdminOrders();
   } catch (error) { showMessage('#order-detail-message', error.message); }
 });
-$('#order-detail-items').addEventListener('click', async (event) => {
-  const saveButton = event.target.closest('[data-save-order-item]');
-  const deleteButton = event.target.closest('[data-delete-order-item]');
-  if (!saveButton && !deleteButton) return;
-  const order = state.adminOrder;
-  const itemId = Number((saveButton || deleteButton).dataset[saveButton ? 'saveOrderItem' : 'deleteOrderItem']);
-  if (!order) return;
-  clearMessage('#order-detail-message');
-  try {
-    if (saveButton) {
-      const quantity = Number($(`[data-item-quantity="${itemId}"]`).value);
-      const note = $(`[data-item-note="${itemId}"]`).value;
-      await api(`/api/orders/${order.id}/items/${itemId}`, { method:'PUT', body:JSON.stringify({ quantity, note }) });
-      showToast('訂單品項已更新');
-      await openOrderDetail(order.id);
-    } else {
-      if (!window.confirm('確定要刪除這個訂單品項嗎？')) return;
-      const result = await api(`/api/orders/${order.id}/items/${itemId}`, { method:'DELETE' });
-      showToast('訂單品項已刪除');
-      if (result.orderDeleted) closeOrderDetail(); else await openOrderDetail(order.id);
-    }
-    loadOrders('#order-list');
-    loadOrders('#recent-orders', 5);
-    if (state.user.role === 'admin') loadAdminOrders();
-  } catch (error) { showMessage('#order-detail-message', error.message); }
-});
-$('#order-detail-delete-order').addEventListener('click', async () => {
-  const order = state.adminOrder;
-  if (!order || !window.confirm(`確定刪除整張訂單 #${order.orderNumber} 嗎？`)) return;
-  try {
-    await api(`/api/orders/${order.id}`, { method:'DELETE' });
-    closeOrderDetail();
-    showToast('訂單已刪除');
-    loadOrders('#order-list');
-    loadOrders('#recent-orders', 5);
-    if (state.user.role === 'admin') loadAdminOrders();
-  } catch (error) { showMessage('#order-detail-message', error.message); }
-});
 $('#admin-export').addEventListener('click', async () => {
   const businessDate = $('#admin-export-date').value;
   if (!businessDate) return showToast('請先選擇匯出日期');
@@ -768,27 +710,17 @@ $('#product-form').addEventListener('submit', async (event) => {
   try {
     const payload = JSON.stringify({ barcode:$('#product-barcode').value, name:$('#product-name').value, specification:$('#product-specification').value });
     const editing = state.editingProductId;
-    const product = await api(editing ? `/api/products/${editing}` : '/api/products', { method:editing ? 'PUT' : 'POST', body:payload });
-    showToast(`商品「${product.name}」已${editing ? '更新' : '建立'}`);
+    if (!editing) throw new Error('請從商品清單選擇要編輯的商品');
+    const product = await api(`/api/products/${editing}`, { method:'PUT', body:payload });
+    showToast(`商品「${product.name}」已更新`);
     clearProductForm();
     loadProducts();
   } catch (error) { showMessage('#product-message', error.message); }
 });
-const productScanner = attachScanner({
-  input: $('#product-barcode'),
-  active: () => Boolean(state.user && state.user.role === 'admin' && $('#page-products').classList.contains('active')),
-  invalidate() { clearMessage('#product-message'); },
-  lookup: async (barcode) => ({ barcode }),
-  success(product) {
-    $('#product-barcode').value = product.barcode;
-    showMessage('#product-message', `條碼 ${product.barcode} 已讀取，請填寫商品名稱後儲存`, 'success');
-    $('#product-name').focus();
-  },
-  failure(error) { showMessage('#product-message', error.message); }
-});
 $('#product-clear').addEventListener('click', clearProductForm);
+$('#product-editor-close').addEventListener('click', clearProductForm);
+$('#product-editor').addEventListener('click', (event) => { if (event.target === $('#product-editor')) clearProductForm(); });
 $('#products-refresh').addEventListener('click', loadProducts);
-$('#product-scan-resume').addEventListener('click', () => productScanner.focus());
 let productSearchTimer;
 $('#product-search').addEventListener('input', () => { clearTimeout(productSearchTimer); state.productPage = 1; productSearchTimer = setTimeout(loadProducts, 180); });
 $('#product-search-field').addEventListener('change', () => { state.productPage = 1; loadProducts(); });
@@ -878,8 +810,7 @@ $('#vendor-list').addEventListener('click', async (event) => {
   if (ordersButton) {
     const vendor = state.vendors.find((item) => Number(item.id) === Number(ordersButton.dataset.vendorOrders));
     if (!vendor) return;
-    $('#admin-order-query').value = vendor.username;
-    $('#admin-order-query-field').value = 'vendor';
+    state.adminOrderVendor = vendor.username;
     state.adminOrderPage = 1;
     showPage('admin-orders');
     return;
@@ -895,16 +826,20 @@ $('#vendor-list').addEventListener('click', async (event) => {
   const vendor = state.vendors.find((item) => Number(item.id) === Number(statusButton.dataset.toggleVendor));
   if (!vendor) return;
   const nextActive = !vendor.active;
-  if (!window.confirm(`確定要${nextActive ? '恢復' : '停用'}「${vendor.displayName}」的登入權限嗎？`)) return;
+  if (!window.confirm(`確定要${nextActive ? '恢復' : '停用'}「${vendor.displayName}」的登入權限嗎？`)) {
+    statusButton.checked = !statusButton.checked;
+    return;
+  }
   try {
     await api(`/api/admin/vendors/${vendor.id}/status`, { method:'PATCH', body:JSON.stringify({ active:nextActive }) });
     showToast(`廠商「${vendor.displayName}」已${nextActive ? '復權' : '停權'}`);
     loadVendors();
-  } catch (error) { showToast(error.message); }
+  } catch (error) { statusButton.checked = !statusButton.checked; showToast(error.message); }
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!$('#product-import-modal').classList.contains('hidden')) closeProductImport();
+  if (!$('#product-editor').classList.contains('hidden')) clearProductForm();
+  else if (!$('#product-import-modal').classList.contains('hidden')) closeProductImport();
   else if (!$('#vendor-import-modal').classList.contains('hidden')) closeVendorImport();
   else if (!$('#vendor-editor').classList.contains('hidden')) closeVendorEditor();
 });
@@ -951,7 +886,10 @@ $('#manual-close').addEventListener('click', async () => {
   } catch (error) { showMessage('#export-message', error.message); }
 });
 $('#schedule-refresh').addEventListener('click', loadSchedule);
-$$('[data-page]').forEach((button) => button.addEventListener('click', () => button.dataset.page === 'workspace' && !state.user ? showPage('login') : showPage(button.dataset.page)));
+$$('[data-page]').forEach((button) => button.addEventListener('click', () => {
+  if (button.dataset.page === 'admin-orders') { state.adminOrderVendor = ''; state.adminOrderPage = 1; }
+  button.dataset.page === 'workspace' && !state.user ? showPage('login') : showPage(button.dataset.page);
+}));
 $$('[data-go-work]').forEach((button) => button.addEventListener('click', () => state.user ? showWork(button.dataset.goWork) : showPage('login')));
 $$('[data-work]').forEach((button) => button.addEventListener('click', () => showWork(button.dataset.work)));
 
@@ -992,4 +930,8 @@ $('#history-end-date').value = today;
 $('#admin-export-date').value = today;
 renderDraftOrder();
 configureScannerPlatform();
-api('/api/me').then((user) => { setAuthenticatedUi(user); loadOrders('#recent-orders', 5); }).catch(() => setAuthenticatedUi(null));
+api('/api/me').then((user) => {
+  setAuthenticatedUi(user);
+  if (user.role === 'admin') showPage('admin-orders');
+  else showWork('scan');
+}).catch(() => { setAuthenticatedUi(null); showPage('login'); });

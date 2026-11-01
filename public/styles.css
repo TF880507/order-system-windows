@@ -5,6 +5,10 @@ button,input,textarea,select { font:inherit; }
 button { cursor:pointer; }
 .hidden { display:none !important; }
 .app-shell { min-height:100vh; display:grid; grid-template-columns:220px 1fr; grid-template-rows:66px 1fr; }
+.logged-out .app-shell { display:block; }
+.logged-out .brand,.logged-out .topbar,.logged-out .sidebar { display:none; }
+.logged-out .content { min-height:100vh; padding:28px 20px; }
+.logged-out .login-wrap { min-height:calc(100vh - 56px); }
 .brand { grid-column:1; grid-row:1; display:flex; align-items:center; gap:10px; padding:0 22px; border-right:1px solid #e3e6ea; border-bottom:1px solid #e3e6ea; background:#fff; font-size:21px; }
 .brand-mark,.login-mark { display:grid; place-items:center; background:#222a40; color:#fff; font-weight:800; }
 .brand-mark { width:27px; height:27px; border-radius:7px; font-size:17px; }
@@ -67,6 +71,9 @@ textarea { min-height:94px; resize:vertical; }
 .tabs button.active { border-color:#222a40; background:#222a40; color:#fff; }
 .work-view { display:none; }
 .scan-layout { display:grid; grid-template-columns:1.15fr .85fr; }
+.scan-order-form label { font-size:21px; }
+.scan-order-form input,.scan-order-form textarea,.scan-order-form .product-preview { font-size:22px; }
+.scan-order-form .product-preview small { font-size:18px; }
 .scan-zone { min-height:370px; display:grid; place-items:center; padding:28px; border-right:1px solid #e4e7eb; background:#fafbfc; text-align:center; outline:none; }
 .scan-zone:focus-within { box-shadow:inset 0 0 0 2px #69728a; }
 .scan-glyph { width:94px; height:94px; display:grid; place-items:center; margin:0 auto 18px; border:2px dashed #939ba8; border-radius:13px; font-size:42px; }
@@ -97,7 +104,7 @@ textarea { min-height:94px; resize:vertical; }
 .history-filter > span { align-self:center; color:#737985; font-size:16px; }
 #history-order-message,#admin-order-message { margin:12px 18px; }
 .narrow-panel { max-width:700px; }
-.product-manager { display:grid; grid-template-columns:minmax(320px,.8fr) minmax(0,1.2fr); gap:18px; align-items:start; }
+.product-manager { display:grid; grid-template-columns:1fr; gap:18px; align-items:start; }
 .vendor-dialog { width:min(980px,100%); }
 .vendor-import-dialog { width:min(620px,100%); }
 .vendor-form-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px 18px; padding:20px; }
@@ -158,6 +165,7 @@ textarea { min-height:94px; resize:vertical; }
 .detail-toolbar > div { display:flex; gap:8px; }
 .select-all-row { display:flex; align-items:center; gap:8px; margin:0; }
 .select-all-row input,.detail-item-check { width:17px; height:17px; margin:0; accent-color:#222a40; }
+.vendor-suspend-check { width:20px; height:20px; margin:0; accent-color:#b42318; }
 .detail-table { max-height:48vh; }
 .detail-table th { position:sticky; top:0; z-index:1; }
 .detail-table .detail-item-check { display:block; }
