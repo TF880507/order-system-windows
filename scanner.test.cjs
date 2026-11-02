@@ -59,3 +59,9 @@ test('native camera result uses the same lookup flow and preserves leading zeroe
   assert.deepEqual(s.requests, ['0012345678905']);
   assert.deepEqual(s.results, ['0012345678905']);
 });
+test('native and USB scanner control bytes are removed before lookup', async () => {
+  const s = setup();
+  await s.scanner.submit('\u0002\u200E4711246121607\u200F\u0003\r\n');
+  assert.equal(s.input.value, '4711246121607');
+  assert.deepEqual(s.requests, ['4711246121607']);
+});

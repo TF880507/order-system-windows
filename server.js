@@ -627,7 +627,15 @@ app.get('/api/products/:barcode', requireAuth, async (req, res) => {
     WHERE barcode=ANY($1::text[]) AND active=TRUE
     ORDER BY array_position($1::text[], barcode) LIMIT 1
   `, [candidates]);
-  if (!rows[0]) return res.status(404).json({ error: '查無此商品條碼' });
+  if (!rows[0]) {
+    console.warn('商品條碼查詢失敗', {
+      userId:req.user.id,
+      username:req.user.username,
+      scannedHex:Buffer.from(String(req.params.barcode || ''), 'utf8').toString('hex'),
+      candidateCount:candidates.length
+    });
+    return res.status(404).json({ error: '查無此商品條碼' });
+  }
   res.json(rows[0]);
 });
 

@@ -1,5 +1,11 @@
 // USB-HID scanners type into this dedicated field, just like a keyboard.
 // Never intercept quantity, notes, passwords, or input in another page.
+function normalizeScannerValue(value) {
+  return String(value ?? '').trim()
+    .replace(/^[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060\uFEFF]+|[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060\uFEFF]+$/g, '')
+    .trim();
+}
+
 function attachScanner({ input, active, invalidate, lookup, success, failure, delay = 300 }) {
   let timer;
   let revision = 0;
@@ -13,8 +19,9 @@ function attachScanner({ input, active, invalidate, lookup, success, failure, de
   async function receive() {
     clearTimeout(timer);
     if (!active() || composing) return;
-    const barcode = input.value.trim();
+    const barcode = normalizeScannerValue(input.value);
     if (!barcode || barcode === lastValue) return;
+    input.value = barcode;
     lastValue = barcode;
     const request = ++revision;
     invalidate();
@@ -31,7 +38,7 @@ function attachScanner({ input, active, invalidate, lookup, success, failure, de
   }
   async function submit(value) {
     cancel();
-    input.value = String(value ?? '').trim();
+    input.value = normalizeScannerValue(value);
     invalidate();
     return receive();
   }
