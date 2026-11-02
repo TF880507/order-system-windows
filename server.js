@@ -4,12 +4,13 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
 const XLSX = require('xlsx');
-const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell, buildOrdersCsv } = require('./schedule');
+const { BUSINESS_TIME_ZONE, getBusinessClock, shiftDate, csvCell } = require('./schedule');
 const { validateOrderDateRange } = require('./order-range');
 const { matchesLegacyMd5 } = require('./legacy-login');
 const { MAX_PRODUCT_IMPORT_ROWS, createProductTemplateBuffer, createProductsExportBuffer, parseProductImportBuffer } = require('./product-spreadsheet');
 const { barcodeCandidates } = require('./barcode-lookup');
 const { createCaptchaAnswer, hashCaptcha, captchaMatches, buildCaptchaSvg, captchaDataUrl } = require('./captcha');
+const { createOrdersExportBuffer } = require('./order-spreadsheet');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -140,6 +141,8 @@ async function initializeDatabase() {
       total_quantity INTEGER NOT NULL,
       csv_content TEXT NOT NULL
     );
+
+    ALTER TABLE order_exports ADD COLUMN IF NOT EXISTS xlsx_content BYTEA;
 
     CREATE TABLE IF NOT EXISTS daily_closings (
       business_date DATE PRIMARY KEY,
@@ -979,31 +982,32 @@ app.delete('/api/admin/orders/:id/items', requireAuth, requireAdmin, async (req,
 
 app.get('/api/admin/orders/:id/export', requireAuth, requireAdmin, async (req, res) => {
   const { rows } = await pool.query(`
-    SELECT orders.business_date::text AS "businessDate", orders.order_number AS "orderNumber",
-      to_char(orders.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
-      users.display_name AS "memberName", order_items.barcode_snapshot AS barcode,
+    SELECT orders.business_date::text AS "businessDate", users.id AS "customerId",
+      users.customer_code AS "customerCode", users.username AS "memberUsername",
+      users.display_name AS "memberName", users.phone, users.tax_id AS "taxId", order_items.barcode_snapshot AS barcode,
       order_items.product_name_snapshot AS "productName", order_items.specification_snapshot AS specification,
-      order_items.quantity, order_items.legacy_quantity AS "originalQuantity", order_items.note, orders.status
+      order_items.quantity, order_items.note
     FROM orders JOIN users ON users.id=orders.user_id
     JOIN order_items ON order_items.order_id=orders.id
     WHERE orders.id=$1 ORDER BY order_items.id
   `, [req.params.id]);
   if (!rows.length) return res.status(404).json({ error:'查無訂單明細' });
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="order-${rows[0].orderNumber}.csv"`);
-  res.send(buildOrdersCsv(rows));
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  const customerCode = String(rows[0].customerCode || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+  res.setHeader('Content-Disposition', `attachment; filename="${rows[0].businessDate}-${customerCode}.xlsx"`);
+  res.send(createOrdersExportBuffer(rows, { businessDate:rows[0].businessDate }));
 });
 
 async function exportRows(client, businessDate) {
   return (await client.query(`
-    SELECT orders.business_date::text AS "businessDate", orders.order_number AS "orderNumber",
-      to_char(orders.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') AS "createdAt",
-      users.display_name AS "memberName", order_items.barcode_snapshot AS barcode,
+    SELECT orders.business_date::text AS "businessDate", users.id AS "customerId",
+      users.customer_code AS "customerCode", users.username AS "memberUsername",
+      users.display_name AS "memberName", users.phone, users.tax_id AS "taxId", order_items.barcode_snapshot AS barcode,
       order_items.product_name_snapshot AS "productName", order_items.specification_snapshot AS specification,
-      order_items.quantity, order_items.legacy_quantity AS "originalQuantity", order_items.note, orders.status
+      order_items.quantity, order_items.note
     FROM orders JOIN users ON users.id=orders.user_id
     JOIN order_items ON order_items.order_id=orders.id
-    WHERE orders.business_date=$1::date ORDER BY orders.id, order_items.id
+    WHERE orders.business_date=$1::date ORDER BY users.customer_code NULLS LAST, users.id, orders.id, order_items.id
   `, [businessDate])).rows;
 }
 
@@ -1015,11 +1019,11 @@ async function createExport(client, businessDate, exportType, userId = null) {
     FROM orders LEFT JOIN order_items ON order_items.order_id=orders.id WHERE orders.business_date=$1::date
   `, [businessDate])).rows[0];
   const result = await client.query(`
-    INSERT INTO order_exports (business_date, export_type, exported_by, order_count, item_count, total_quantity, csv_content)
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    INSERT INTO order_exports (business_date, export_type, exported_by, order_count, item_count, total_quantity, csv_content, xlsx_content)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
     RETURNING id, business_date::text AS "businessDate", export_type AS "exportType", exported_at AS "exportedAt",
       order_count AS "orderCount", item_count AS "itemCount", total_quantity AS "totalQuantity"
-  `, [businessDate, exportType, userId, totals.orderCount, totals.itemCount, totals.totalQuantity, buildOrdersCsv(rows)]);
+  `, [businessDate, exportType, userId, totals.orderCount, totals.itemCount, totals.totalQuantity, '', createOrdersExportBuffer(rows, { businessDate })]);
   return result.rows[0];
 }
 
@@ -1103,11 +1107,16 @@ app.post('/api/schedule/close', requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.get('/api/exports/:id/download', requireAuth, requireAdmin, async (req, res) => {
-  const { rows } = await pool.query('SELECT business_date::text AS "businessDate", csv_content AS content FROM order_exports WHERE id=$1', [req.params.id]);
+  const { rows } = await pool.query('SELECT business_date::text AS "businessDate", xlsx_content AS content FROM order_exports WHERE id=$1', [req.params.id]);
   if (!rows[0]) return res.status(404).json({ error:'查無匯出紀錄' });
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="orders-${rows[0].businessDate}.csv"`);
-  res.send(rows[0].content);
+  let content = rows[0].content;
+  if (!content) {
+    content = createOrdersExportBuffer(await exportRows(pool, rows[0].businessDate), { businessDate:rows[0].businessDate });
+    await pool.query('UPDATE order_exports SET xlsx_content=$1 WHERE id=$2', [content, req.params.id]);
+  }
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${rows[0].businessDate}.xlsx"`);
+  res.send(content);
 });
 
 app.get('/api/health', async (_req, res) => {

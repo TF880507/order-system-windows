@@ -26,7 +26,7 @@
         <section id="work-orders" class="work-view"><div class="panel"><div class="panel-heading orders-query-heading"><div><h2 id="member-orders-title">當月訂單</h2><p id="member-orders-caption" class="input-help">自動顯示本月最新訂單，每頁 50 筆。</p></div><button id="query-current-month" class="button secondary" type="button">回到當月</button></div><form id="history-order-form" class="history-filter"><label>開始日期<input id="history-start-date" type="date" required></label><label>結束日期<input id="history-end-date" type="date" required></label><button class="button primary" type="submit">查詢歷史訂單</button><span>單次最多查詢 3 個月，包含結束當天。</span></form><p id="history-order-message" class="message hidden"></p><div class="table-scroll"><table><thead><tr><th>訂單編號</th><th>建立時間</th><th>會員</th><th>品項</th><th>數量</th><th>狀態</th><th>操作</th></tr></thead><tbody id="order-list"><tr><td colspan="7" class="empty">尚無資料</td></tr></tbody></table></div><div class="product-pagination"><span id="member-order-page-info">載入中</span><div><button id="member-order-page-prev" class="button secondary" type="button">上一頁</button><button id="member-order-page-next" class="button secondary" type="button">下一頁</button></div></div></div></section>
       </section>
       <section id="page-admin-orders" class="page">
-        <div class="page-heading admin-order-heading"><div><h1>訂單管理</h1><p>查詢所有客戶訂單、查看商品明細並匯出資料</p></div><div class="heading-actions"><input id="admin-export-date" type="date" aria-label="匯出訂單日期"><button id="admin-export" class="button primary" type="button">匯出當日 CSV</button></div></div>
+        <div class="page-heading admin-order-heading"><div><h1>訂單管理</h1><p>查詢所有客戶訂單、查看商品明細並匯出資料</p></div><div class="heading-actions"><input id="admin-export-date" type="date" aria-label="匯出訂單日期"><button id="admin-export" class="button primary" type="button">匯出當日 Excel</button></div></div>
         <section class="panel admin-orders-panel">
           <p id="admin-order-message" class="message hidden"></p>
           <div class="table-scroll"><table><thead><tr><th>訂單日期</th><th>廠商名稱</th><th>訂單明細</th><th>狀態</th></tr></thead><tbody id="admin-order-list"><tr><td colspan="4" class="empty">載入中</td></tr></tbody></table></div>
@@ -99,9 +99,9 @@
           </section>
           <section class="panel"><div class="panel-heading"><h2>手動操作</h2></div>
             <div class="order-form"><label>營業日期<input id="export-date" type="date"></label>
-              <p class="input-help">「匯出 CSV」只建立當下快照，不會鎖定當日訂單；「立即結單」會永久鎖定該日期。</p>
+              <p class="input-help">「匯出 Excel」只建立當下快照，不會鎖定當日訂單；「立即結單」會永久鎖定該日期。</p>
               <p id="export-message" class="message hidden"></p>
-              <div class="form-actions schedule-actions"><button id="manual-export" class="button secondary" type="button">匯出 CSV</button><button id="manual-close" class="button danger-button" type="button">立即結單</button></div>
+              <div class="form-actions schedule-actions"><button id="manual-export" class="button secondary" type="button">匯出 Excel</button><button id="manual-close" class="button danger-button" type="button">立即結單</button></div>
             </div>
           </section>
         </div>
@@ -113,7 +113,7 @@
     <section class="detail-modal">
       <header class="detail-header"><div><span class="detail-eyebrow">訂單商品明細</span><h2 id="order-detail-title">訂單明細</h2></div><button id="order-detail-close" class="icon-button" type="button" aria-label="關閉">×</button></header>
       <div id="order-detail-meta" class="detail-meta"></div>
-      <div class="detail-toolbar"><label id="order-detail-select-wrap" class="select-all-row"><input id="order-detail-select-all" type="checkbox"><span id="order-detail-select-label">全選可刪除品項</span></label><div><a id="order-detail-export" class="button secondary download-link" href="#">下載此訂單 CSV</a><button id="order-detail-delete" class="button danger-button" type="button">刪除所選品項</button></div></div>
+      <div class="detail-toolbar"><label id="order-detail-select-wrap" class="select-all-row"><input id="order-detail-select-all" type="checkbox"><span id="order-detail-select-label">全選可刪除品項</span></label><div><a id="order-detail-export" class="button secondary download-link" href="#">下載此訂單 Excel</a><button id="order-detail-delete" class="button danger-button" type="button">刪除所選品項</button></div></div>
       <p id="order-detail-message" class="message hidden"></p>
       <div class="table-scroll detail-table"><table><thead><tr><th>選取</th><th>條碼</th><th>商品名稱</th><th>單位</th><th>數量</th><th>說明</th></tr></thead><tbody id="order-detail-items"></tbody></table></div>
     </section>

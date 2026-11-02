@@ -422,7 +422,7 @@ async function loadSchedule() {
     $('#export-date').value ||= data.today;
     $('#schedule-state').textContent = data.setting.enabled ? `每日 ${data.setting.closeTime} 啟用中` : '排程已停用';
     $('#schedule-state').classList.toggle('disabled-tag', !data.setting.enabled);
-    target.innerHTML = data.exports.length ? data.exports.map((item) => `<tr><td><b>${escapeHtml(item.businessDate)}</b></td><td>${item.exportType === 'automatic' ? '自動排程' : '手動匯出'}</td><td>${escapeHtml(formatDateTime(item.exportedAt))}</td><td>${item.orderCount}</td><td>${item.itemCount} 項／${item.totalQuantity} 件</td><td><span class="status-tag">${item.closed ? '已結單' : '快照'}</span></td><td><a class="text-button download-link" href="${appBase}/api/exports/${item.id}/download">下載 CSV</a></td></tr>`).join('') : '<tr><td colspan="7" class="empty">尚無匯出紀錄</td></tr>';
+    target.innerHTML = data.exports.length ? data.exports.map((item) => `<tr><td><b>${escapeHtml(item.businessDate)}</b></td><td>${item.exportType === 'automatic' ? '自動排程' : '手動匯出'}</td><td>${escapeHtml(formatDateTime(item.exportedAt))}</td><td>${item.orderCount}</td><td>${item.itemCount} 項／${item.totalQuantity} 件</td><td><span class="status-tag">${item.closed ? '已結單' : '快照'}</span></td><td><a class="text-button download-link" href="${appBase}/api/exports/${item.id}/download">下載 Excel</a></td></tr>`).join('') : '<tr><td colspan="7" class="empty">尚無匯出紀錄</td></tr>';
   } catch (error) { target.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message)}</td></tr>`; }
 }
 
@@ -701,7 +701,7 @@ $('#admin-export').addEventListener('click', async () => {
   if (!businessDate) return showToast('請先選擇匯出日期');
   try {
     const exported = await api('/api/schedule/export', { method:'POST', body:JSON.stringify({ businessDate }) });
-    showToast(`${businessDate} 訂單 CSV 已建立`);
+    showToast(`${businessDate} 訂單 Excel 已建立`);
     window.location.assign(`${appBase}/api/exports/${exported.id}/download`);
   } catch (error) { showToast(error.message); }
 });
@@ -870,7 +870,7 @@ $('#manual-export').addEventListener('click', async () => {
   clearMessage('#export-message');
   try {
     const exported = await api('/api/schedule/export', { method:'POST', body:JSON.stringify({ businessDate:$('#export-date').value }) });
-    showMessage('#export-message', 'CSV 已建立並開始下載', 'success');
+    showMessage('#export-message', 'Excel 已建立並開始下載', 'success');
     window.location.assign(`${appBase}/api/exports/${exported.id}/download`);
     loadSchedule();
   } catch (error) { showMessage('#export-message', error.message); }
