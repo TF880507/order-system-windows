@@ -56,7 +56,8 @@ public class ScannerActivity extends Activity {
     private CameraDevice camera;
     private CameraCaptureSession session;
     private ImageReader imageReader;
-    private final MultiFormatReader barcodeReader = new MultiFormatReader();
+    private final MultiFormatReader oneDimensionalReader = new MultiFormatReader();
+    private final MultiFormatReader matrixReader = new MultiFormatReader();
     private final AtomicBoolean decoding = new AtomicBoolean(false);
     private volatile boolean finished;
 
@@ -69,8 +70,7 @@ public class ScannerActivity extends Activity {
     }
 
     private void configureBarcodeReader() {
-        List<BarcodeFormat> formats = Arrays.asList(
-            BarcodeFormat.QR_CODE,
+        List<BarcodeFormat> oneDimensionalFormats = Arrays.asList(
             BarcodeFormat.EAN_13,
             BarcodeFormat.EAN_8,
             BarcodeFormat.UPC_A,
@@ -79,17 +79,25 @@ public class ScannerActivity extends Activity {
             BarcodeFormat.CODE_93,
             BarcodeFormat.CODE_128,
             BarcodeFormat.ITF,
-            BarcodeFormat.CODABAR,
+            BarcodeFormat.CODABAR
+        );
+        List<BarcodeFormat> matrixFormats = Arrays.asList(
+            BarcodeFormat.QR_CODE,
             BarcodeFormat.DATA_MATRIX,
             BarcodeFormat.PDF_417,
             BarcodeFormat.AZTEC
         );
+        oneDimensionalReader.setHints(createDecodeHints(oneDimensionalFormats));
+        matrixReader.setHints(createDecodeHints(matrixFormats));
+    }
+
+    private Map<DecodeHintType, Object> createDecodeHints(List<BarcodeFormat> formats) {
         Map<DecodeHintType, Object> hints = new EnumMap<DecodeHintType, Object>(DecodeHintType.class);
         hints.put(DecodeHintType.POSSIBLE_FORMATS, formats);
         hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
         hints.put(DecodeHintType.ASSUME_GS1, Boolean.TRUE);
         hints.put(DecodeHintType.CHARACTER_SET, "UTF-8");
-        barcodeReader.setHints(hints);
+        return hints;
     }
 
     private void buildInterface() {
@@ -247,24 +255,29 @@ public class ScannerActivity extends Activity {
                 for (int column = 0; column < width; column++) luminance[row * width + column] = buffer.get(rowStart + column * pixelStride);
             }
             PlanarYUVLuminanceSource full = new PlanarYUVLuminanceSource(luminance, width, height, 0, 0, width, height, false);
-            Result result = tryDecodeAllOrientations(full);
-            if (result == null && full.isCropSupported()) {
-                int cropLeft = width / 12;
-                int cropTop = height / 6;
-                result = tryDecodeAllOrientations(full.crop(cropLeft, cropTop, width - cropLeft * 2, height - cropTop * 2));
+            LuminanceSource center = full;
+            if (full.isCropSupported()) {
+                int cropLeft = width / 8;
+                int cropTop = height / 4;
+                center = full.crop(cropLeft, cropTop, width - cropLeft * 2, height - cropTop * 2);
             }
-            if (result != null && !finished) finishWithResult(result);
+            // 商品的一維條碼優先於同一畫面周圍的網址 QR Code。
+            Result result = tryDecodeAllOrientations(center, oneDimensionalReader);
+            if (result == null) result = tryDecodeAllOrientations(full, oneDimensionalReader);
+            if (result == null) result = tryDecodeAllOrientations(center, matrixReader);
+            if (result != null && !isUnrelatedWebQr(result) && !finished) finishWithResult(result);
         } finally {
             image.close();
-            barcodeReader.reset();
+            oneDimensionalReader.reset();
+            matrixReader.reset();
             decoding.set(false);
         }
     }
 
-    private Result tryDecodeAllOrientations(LuminanceSource source) {
+    private Result tryDecodeAllOrientations(LuminanceSource source, MultiFormatReader reader) {
         LuminanceSource current = source;
         for (int rotation = 0; rotation < 4; rotation++) {
-            Result result = tryDecode(current);
+            Result result = tryDecode(current, reader);
             if (result != null) return result;
             if (!current.isRotateSupported()) break;
             current = current.rotateCounterClockwise();
@@ -272,20 +285,26 @@ public class ScannerActivity extends Activity {
         return null;
     }
 
-    private Result tryDecode(LuminanceSource source) {
-        Result result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(source)));
+    private Result tryDecode(LuminanceSource source, MultiFormatReader reader) {
+        Result result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(source)), reader);
         if (result != null) return result;
-        result = decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(source)));
+        result = decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(source)), reader);
         if (result != null) return result;
         LuminanceSource inverted = source.invert();
-        result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(inverted)));
+        result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(inverted)), reader);
         if (result != null) return result;
-        return decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(inverted)));
+        return decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(inverted)), reader);
     }
 
-    private Result decodeBitmap(BinaryBitmap bitmap) {
-        try { return barcodeReader.decodeWithState(bitmap); }
-        catch (Exception ignored) { barcodeReader.reset(); return null; }
+    private Result decodeBitmap(BinaryBitmap bitmap, MultiFormatReader reader) {
+        try { return reader.decodeWithState(bitmap); }
+        catch (Exception ignored) { reader.reset(); return null; }
+    }
+
+    private boolean isUnrelatedWebQr(Result result) {
+        if (result.getBarcodeFormat() != BarcodeFormat.QR_CODE) return false;
+        String text = result.getText() == null ? "" : result.getText().trim().toLowerCase(java.util.Locale.ROOT);
+        return text.startsWith("http://") || text.startsWith("https://");
     }
 
     private void finishWithResult(Result result) {

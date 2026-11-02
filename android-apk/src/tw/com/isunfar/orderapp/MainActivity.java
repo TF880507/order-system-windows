@@ -24,7 +24,7 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
-    private static final String APP_URL = "http://72.62.75.119:4000/";
+    private static final String APP_URL = "https://good.joef.com.tw/";
     private static final int STORAGE_PERMISSION_REQUEST = 42;
     private static final int CAMERA_PERMISSION_REQUEST = 43;
     private static final int BARCODE_SCAN_REQUEST = 44;
@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setSupportZoom(false);
-        settings.setUserAgentString(settings.getUserAgentString() + " HaoShiJiOrderApp/4.0 AndroidCameraScanner");
+        settings.setUserAgentString(settings.getUserAgentString() + " HaoShiJiOrderApp/5.0 AndroidCameraScanner");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
