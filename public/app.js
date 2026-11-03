@@ -113,7 +113,6 @@ function showWork(name) {
     showToast('系統管理員僅能管理與查詢，不能新增訂單');
     return;
   }
-  if (name === 'manual') name = 'scan';
   showPage('workspace');
   $$('.work-view').forEach((view) => view.classList.toggle('active', view.id === `work-${name}`));
   $$('.tabs button').forEach((button) => button.classList.toggle('active', button.dataset.work === name));
@@ -146,7 +145,7 @@ function setAuthenticatedUi(user) {
   $('#login-nav').classList.toggle('hidden', Boolean(user));
   const isAdmin = user?.role === 'admin';
   $('#workspace-nav').classList.toggle('hidden', !user || isAdmin);
-  $('#manual-work-tab').classList.add('hidden');
+  $('#manual-work-tab').classList.toggle('hidden', !user || isAdmin);
   $('#admin-orders-nav').classList.toggle('hidden', !isAdmin);
   $('#vendors-nav').classList.toggle('hidden', !isAdmin);
   $('#products-nav').classList.toggle('hidden', !isAdmin);

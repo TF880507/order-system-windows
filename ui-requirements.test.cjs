@@ -38,6 +38,14 @@ test('draft order items allow quantity and note corrections before final submiss
   assert.match(html, /完成整張訂單並產生編號/);
 });
 
+test('members can use scan, manual barcode entry and order lookup', () => {
+  assert.match(html, /id="manual-work-tab" data-work="manual"/);
+  assert.doesNotMatch(html, /id="manual-work-tab" class="hidden"/);
+  assert.match(html, /輸入完成後會自動顯示商品，不需要再按查詢/);
+  assert.match(html, /<button class="button primary" type="submit">加入本次訂單<\/button>/);
+  assert.doesNotMatch(app, /if \(name === 'manual'\) name = 'scan'/);
+});
+
 test('product and vendor lists use requested pagination and labels', () => {
   assert.match(html, /<th>單位<\/th><th>操作<\/th>/);
   assert.match(html, /<th>客戶序號<\/th><th>帳號<\/th><th>密碼<\/th><th>客戶名稱<\/th>/);
