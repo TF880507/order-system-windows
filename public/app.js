@@ -299,22 +299,20 @@ async function openOrderDetail(id) {
       <div><span>客戶名稱</span><b>${escapeHtml(order.memberName)}</b><small>${escapeHtml(order.memberUsername)}</small></div>
       <div><span>營業日期</span><b>${escapeHtml(order.businessDate)}</b><small>${escapeHtml(formatDateTime(order.createdAt))}</small></div>
       <div><span>客戶資料</span><b>${escapeHtml(order.phone || '未提供電話')}</b><small>統編：${escapeHtml(order.taxId || '—')}　客戶序號：${escapeHtml(order.customerCode || '—')}</small></div>
-      <div><span>訂單狀態</span><b>${order.editable ? '未匯出' : '已匯出'}</b><small>${order.editable ? '可修改或刪除品項' : '已鎖定，不可修改'}</small></div>`;
-    const canEdit = order.editable && Boolean(state.user);
+      <div><span>訂單狀態</span><b>${order.editable ? '未匯出' : '已匯出'}</b><small>${order.editable ? '可勾選刪除品項' : '已鎖定，不可修改'}</small></div>`;
     $('#order-detail-items').innerHTML = order.items.length ? order.items.map((item) => `<tr>
       <td><input class="detail-item-check" type="checkbox" value="${item.id}" aria-label="選取 ${escapeHtml(item.name)}" ${order.editable && state.user.role === 'admin' ? '' : 'disabled'}></td>
       <td>${escapeHtml(item.barcode)}</td><td><b>${escapeHtml(item.name)}</b></td><td>${escapeHtml(item.specification || '—')}</td>
-      <td>${canEdit ? `<input class="detail-quantity" data-item-quantity="${item.id}" type="number" min="1" max="9999" value="${item.quantity}" aria-label="${escapeHtml(item.name)}數量">` : item.quantity}${item.originalQuantity && item.originalQuantity !== String(item.quantity) ? `<small class="original-quantity">原始：${escapeHtml(item.originalQuantity)}</small>` : ''}</td>
-      <td>${canEdit ? `<input class="detail-note" data-item-note="${item.id}" maxlength="500" value="${escapeHtml(item.note || '')}" placeholder="選填" aria-label="${escapeHtml(item.name)}說明">` : escapeHtml(item.note || '—')}</td>
-      <td class="row-actions">${canEdit ? `<button class="text-button" data-save-order-item="${item.id}" type="button">儲存</button><button class="text-button danger" data-delete-order-item="${item.id}" type="button">刪除</button>` : '—'}</td>
-    </tr>`).join('') : '<tr><td colspan="7" class="empty">此訂單沒有商品明細</td></tr>';
+      <td>${item.quantity}${item.originalQuantity && item.originalQuantity !== String(item.quantity) ? `<small class="original-quantity">原始：${escapeHtml(item.originalQuantity)}</small>` : ''}</td>
+      <td>${escapeHtml(item.note || '—')}</td>
+    </tr>`).join('') : '<tr><td colspan="6" class="empty">此訂單沒有商品明細</td></tr>';
     const isAdmin = state.user.role === 'admin';
     $('#order-detail-select-wrap').classList.toggle('hidden', !isAdmin);
     $('#order-detail-delete').classList.toggle('hidden', !isAdmin);
     $('#order-detail-export').classList.toggle('hidden', !isAdmin);
     $('#order-detail-select-all').checked = false;
     $('#order-detail-select-all').disabled = !isAdmin || !order.editable || !order.items.length;
-    $('#order-detail-select-label').textContent = order.editable ? '全選可批次刪除品項' : '已結單，品項不可修改或刪除';
+    $('#order-detail-select-label').textContent = order.editable ? '全選可刪除品項' : '已結單，品項不可勾選或刪除';
     $('#order-detail-delete').disabled = !isAdmin || !order.editable || !order.items.length;
     $('#order-detail-export').href = `${appBase}/api/admin/orders/${order.id}/export`;
     clearMessage('#order-detail-message');
@@ -717,40 +715,6 @@ $('#order-detail-delete').addEventListener('click', async () => {
     if (result.orderDeleted) closeOrderDetail(); else await openOrderDetail(order.id);
     loadAdminOrders();
   } catch (error) { showMessage('#order-detail-message', error.message); }
-});
-$('#order-detail-items').addEventListener('click', async (event) => {
-  const saveButton = event.target.closest('[data-save-order-item]');
-  const deleteButton = event.target.closest('[data-delete-order-item]');
-  const button = saveButton || deleteButton;
-  const order = state.adminOrder;
-  if (!button || !order || !order.editable) return;
-  const itemId = Number(saveButton?.dataset.saveOrderItem || deleteButton?.dataset.deleteOrderItem);
-  const row = button.closest('tr');
-  if (deleteButton && !window.confirm('確定刪除這個訂單品項嗎？')) return;
-  button.disabled = true;
-  clearMessage('#order-detail-message');
-  try {
-    if (saveButton) {
-      const quantity = Number(row.querySelector('[data-item-quantity]').value);
-      const note = row.querySelector('[data-item-note]').value.trim();
-      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) throw new Error('商品數量須為 1 至 9999 的整數');
-      await api(`/api/orders/${order.id}/items/${itemId}`, { method:'PUT', body:JSON.stringify({ quantity, note }) });
-      showToast('訂單品項已修改');
-    } else {
-      const result = await api(`/api/orders/${order.id}/items/${itemId}`, { method:'DELETE' });
-      showToast('訂單品項已刪除');
-      if (result.orderDeleted) {
-        closeOrderDetail();
-        if (state.user.role === 'admin') loadAdminOrders(); else loadOrders('#order-list');
-        return;
-      }
-    }
-    await openOrderDetail(order.id);
-    if (state.user.role === 'admin') loadAdminOrders(); else loadOrders('#order-list');
-  } catch (error) {
-    showMessage('#order-detail-message', error.message);
-    button.disabled = false;
-  }
 });
 $('#admin-export').addEventListener('click', async () => {
   const businessDate = $('#admin-export-date').value;
