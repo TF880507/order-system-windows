@@ -254,17 +254,21 @@ public class ScannerActivity extends Activity {
                 int rowStart = bufferStart + row * rowStride;
                 for (int column = 0; column < width; column++) luminance[row * width + column] = buffer.get(rowStart + column * pixelStride);
             }
-            PlanarYUVLuminanceSource full = new PlanarYUVLuminanceSource(luminance, width, height, 0, 0, width, height, false);
-            LuminanceSource center = full;
-            if (full.isCropSupported()) {
-                int cropLeft = width / 8;
-                int cropTop = height / 4;
-                center = full.crop(cropLeft, cropTop, width - cropLeft * 2, height - cropTop * 2);
+            // Camera2 的 YUV 畫面通常維持感光元件的橫向方向，即使 Activity 是直向。
+            // TextureView 預覽會被系統轉向，但 ZXing 收到的 byte[] 不會，因此同時測試
+            // 原始與 90 度畫面。這可避免「畫面看得到條碼、辨識器卻讀不到」的情況。
+            Result result = tryDecodeFrame(luminance, width, height, oneDimensionalReader, true);
+            if (result == null) {
+                RotatedFrame rotated = rotateClockwise(luminance, width, height);
+                result = tryDecodeFrame(rotated.data, rotated.width, rotated.height, oneDimensionalReader, true);
             }
-            // 商品的一維條碼優先於同一畫面周圍的網址 QR Code。
-            Result result = tryDecodeAllOrientations(center, oneDimensionalReader);
-            if (result == null) result = tryDecodeAllOrientations(full, oneDimensionalReader);
-            if (result == null) result = tryDecodeAllOrientations(center, matrixReader);
+
+            // 先找商品的一維條碼，避免同一畫面旁邊的網址 QR Code 搶先回傳。
+            if (result == null) result = tryDecodeFrame(luminance, width, height, matrixReader, false);
+            if (result == null) {
+                RotatedFrame rotated = rotateClockwise(luminance, width, height);
+                result = tryDecodeFrame(rotated.data, rotated.width, rotated.height, matrixReader, false);
+            }
             if (result != null && !isUnrelatedWebQr(result) && !finished) finishWithResult(result);
         } finally {
             image.close();
@@ -274,15 +278,47 @@ public class ScannerActivity extends Activity {
         }
     }
 
-    private Result tryDecodeAllOrientations(LuminanceSource source, MultiFormatReader reader) {
-        LuminanceSource current = source;
-        for (int rotation = 0; rotation < 4; rotation++) {
-            Result result = tryDecode(current, reader);
-            if (result != null) return result;
-            if (!current.isRotateSupported()) break;
-            current = current.rotateCounterClockwise();
+    private Result tryDecodeFrame(byte[] luminance, int width, int height, MultiFormatReader reader, boolean oneDimensional) {
+        PlanarYUVLuminanceSource full = new PlanarYUVLuminanceSource(luminance, width, height, 0, 0, width, height, false);
+
+        // 不同手機的相機預覽縮放比例不同，依序測試窄框、寬框及完整畫面。
+        int tightLeft = width / 10;
+        int tightTop = height / 4;
+        Result result = tryDecode(full.crop(tightLeft, tightTop, width - tightLeft * 2, height - tightTop * 2), reader);
+        if (result != null) return result;
+
+        int wideLeft = width / 32;
+        int wideTop = height / 7;
+        result = tryDecode(full.crop(wideLeft, wideTop, width - wideLeft * 2, height - wideTop * 2), reader);
+        if (result != null) return result;
+
+        // 一維碼額外測完整畫面，涵蓋預覽與感光元件裁切不同步的裝置。
+        return oneDimensional ? tryDecode(full, reader) : null;
+    }
+
+    private RotatedFrame rotateClockwise(byte[] source, int width, int height) {
+        byte[] rotated = new byte[source.length];
+        int rotatedWidth = height;
+        int rotatedHeight = width;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rotatedX = height - 1 - y;
+                int rotatedY = x;
+                rotated[rotatedY * rotatedWidth + rotatedX] = source[y * width + x];
+            }
         }
-        return null;
+        return new RotatedFrame(rotated, rotatedWidth, rotatedHeight);
+    }
+
+    private static final class RotatedFrame {
+        final byte[] data;
+        final int width;
+        final int height;
+        RotatedFrame(byte[] data, int width, int height) {
+            this.data = data;
+            this.width = width;
+            this.height = height;
+        }
     }
 
     private Result tryDecode(LuminanceSource source, MultiFormatReader reader) {
