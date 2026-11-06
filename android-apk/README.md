@@ -1,6 +1,6 @@
 # 好市吉 App Android 包裝
 
-這個 APK 使用原生 Android WebView 開啟 `https://good.joef.com.tw/`。5.0 版會優先辨識掃描框中央的 EAN／UPC／Code 商品條碼，避免畫面周圍的網址 QR Code 搶先誤判；並支援 EAN-13、EAN-8、UPC-A、Code 128、Code 39、ITF-14、GS1-128 與非網址型商品 QR Code。掃描結果會交給和 Windows USB 掃碼器相同的商品查詢及下單流程。Excel 匯出會下載到 Android 的「下載」資料夾。
+這個 APK 使用原生 Android WebView 開啟 `https://good.joef.com.tw/`。7.0 版將相機預覽與條碼辨識分開執行：複製亮度資料後立即釋放相機影像，只處理最新影格，不堆積辨識工作；旋轉、裁切及反色備援分散到不同影格，每幀最多呼叫兩次辨識器。離開掃描頁不等待辨識執行緒，過期結果不會回傳。支援 EAN-13、EAN-8、UPC-A、Code 128、Code 39、ITF-14、GS1-128 與非網址型商品 QR Code。掃描結果會交給和 Windows USB 掃碼器相同的商品查詢及下單流程。Excel 匯出會下載到 Android 的「下載」資料夾。
 
 第一次使用相機掃描時會要求 Android 相機權限。APK 支援 Android 6.0 以上，並沿用既有簽章，可直接覆蓋更新。
 

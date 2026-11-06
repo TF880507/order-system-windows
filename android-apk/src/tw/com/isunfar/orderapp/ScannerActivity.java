@@ -18,6 +18,7 @@ import android.media.ImageReader;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.TextureView;
@@ -28,21 +29,14 @@ import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
-import com.google.zxing.BinaryBitmap;
 import com.google.zxing.BarcodeFormat;
-import com.google.zxing.DecodeHintType;
-import com.google.zxing.LuminanceSource;
-import com.google.zxing.MultiFormatReader;
-import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
-import com.google.zxing.common.GlobalHistogramBinarizer;
-import com.google.zxing.common.HybridBinarizer;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ScannerActivity extends Activity {
@@ -56,48 +50,21 @@ public class ScannerActivity extends Activity {
     private CameraDevice camera;
     private CameraCaptureSession session;
     private ImageReader imageReader;
-    private final MultiFormatReader oneDimensionalReader = new MultiFormatReader();
-    private final MultiFormatReader matrixReader = new MultiFormatReader();
     private final AtomicBoolean decoding = new AtomicBoolean(false);
+    private ExecutorService decodeExecutor;
+    private BarcodeDecoder decoder;
+    private byte[] luminance;
+    private long lastFrameAt;
+    private volatile boolean active;
+    private volatile int generation;
+    private Surface previewSurface;
     private volatile boolean finished;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        configureBarcodeReader();
         buildInterface();
-    }
-
-    private void configureBarcodeReader() {
-        List<BarcodeFormat> oneDimensionalFormats = Arrays.asList(
-            BarcodeFormat.EAN_13,
-            BarcodeFormat.EAN_8,
-            BarcodeFormat.UPC_A,
-            BarcodeFormat.UPC_E,
-            BarcodeFormat.CODE_39,
-            BarcodeFormat.CODE_93,
-            BarcodeFormat.CODE_128,
-            BarcodeFormat.ITF,
-            BarcodeFormat.CODABAR
-        );
-        List<BarcodeFormat> matrixFormats = Arrays.asList(
-            BarcodeFormat.QR_CODE,
-            BarcodeFormat.DATA_MATRIX,
-            BarcodeFormat.PDF_417,
-            BarcodeFormat.AZTEC
-        );
-        oneDimensionalReader.setHints(createDecodeHints(oneDimensionalFormats));
-        matrixReader.setHints(createDecodeHints(matrixFormats));
-    }
-
-    private Map<DecodeHintType, Object> createDecodeHints(List<BarcodeFormat> formats) {
-        Map<DecodeHintType, Object> hints = new EnumMap<DecodeHintType, Object>(DecodeHintType.class);
-        hints.put(DecodeHintType.POSSIBLE_FORMATS, formats);
-        hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
-        hints.put(DecodeHintType.ASSUME_GS1, Boolean.TRUE);
-        hints.put(DecodeHintType.CHARACTER_SET, "UTF-8");
-        return hints;
     }
 
     private void buildInterface() {
@@ -139,6 +106,13 @@ public class ScannerActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        active = true;
+        generation++;
+        decoder = new BarcodeDecoder();
+        luminance = null;
+        lastFrameAt = 0;
+        decoding.set(false);
+        decodeExecutor = Executors.newSingleThreadExecutor();
         cameraThread = new HandlerThread("barcode-camera");
         cameraThread.start();
         cameraHandler = new Handler(cameraThread.getLooper());
@@ -146,10 +120,12 @@ public class ScannerActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        active = false;
+        generation++;
         closeCamera();
+        if (decodeExecutor != null) { decodeExecutor.shutdownNow(); decodeExecutor = null; }
         if (cameraThread != null) {
             cameraThread.quitSafely();
-            try { cameraThread.join(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
             cameraThread = null;
             cameraHandler = null;
         }
@@ -157,7 +133,8 @@ public class ScannerActivity extends Activity {
     }
 
     private void openCamera() {
-        if (camera != null || cameraHandler == null) return;
+        if (!active || finished || camera != null || cameraHandler == null) return;
+        final int openingGeneration = generation;
         CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
         try {
             String cameraId = chooseBackCamera(manager);
@@ -171,7 +148,10 @@ public class ScannerActivity extends Activity {
                 @Override public void onImageAvailable(ImageReader reader) { decodeImage(reader); }
             }, cameraHandler);
             manager.openCamera(cameraId, new CameraDevice.StateCallback() {
-                @Override public void onOpened(CameraDevice device) { camera = device; createSession(); }
+                @Override public void onOpened(CameraDevice device) {
+                    if (!active || generation != openingGeneration) { device.close(); return; }
+                    camera = device; createSession();
+                }
                 @Override public void onDisconnected(CameraDevice device) { device.close(); camera = null; fail("相機連線中斷"); }
                 @Override public void onError(CameraDevice device, int error) { device.close(); camera = null; fail("無法啟動相機"); }
             }, cameraHandler);
@@ -216,7 +196,7 @@ public class ScannerActivity extends Activity {
         try {
             SurfaceTexture texture = preview.getSurfaceTexture();
             texture.setDefaultBufferSize(imageReader.getWidth(), imageReader.getHeight());
-            Surface previewSurface = new Surface(texture);
+            previewSurface = new Surface(texture);
             CaptureRequest.Builder request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             request.addTarget(previewSurface);
             request.addTarget(imageReader.getSurface());
@@ -226,6 +206,7 @@ public class ScannerActivity extends Activity {
             request.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO);
             camera.createCaptureSession(Arrays.asList(previewSurface, imageReader.getSurface()), new CameraCaptureSession.StateCallback() {
                 @Override public void onConfigured(CameraCaptureSession captureSession) {
+                    if (!active || camera == null) { captureSession.close(); return; }
                     session = captureSession;
                     try { captureSession.setRepeatingRequest(request.build(), null, cameraHandler); }
                     catch (CameraAccessException error) { fail("無法開始相機預覽"); }
@@ -238,103 +219,66 @@ public class ScannerActivity extends Activity {
     }
 
     private void decodeImage(ImageReader reader) {
-        Image image = reader.acquireLatestImage();
+        Image image;
+        try { image = reader.acquireLatestImage(); }
+        catch (IllegalStateException closed) { return; }
         if (image == null) return;
-        if (!decoding.compareAndSet(false, true)) { image.close(); return; }
+        long now = SystemClock.elapsedRealtime();
+        if (!active || finished || now - lastFrameAt < 120 || !decoding.compareAndSet(false, true)) {
+            image.close(); return;
+        }
+        lastFrameAt = now;
+        final int frameGeneration = generation;
+        final int width = image.getWidth();
+        final int height = image.getHeight();
+        final BarcodeDecoder frameDecoder = decoder;
         try {
             Image.Plane plane = image.getPlanes()[0];
             ByteBuffer buffer = plane.getBuffer();
-            int width = image.getWidth();
-            int height = image.getHeight();
             int rowStride = plane.getRowStride();
             int pixelStride = plane.getPixelStride();
             int bufferStart = buffer.position();
-            byte[] luminance = new byte[width * height];
+            if (luminance == null || luminance.length != width * height) luminance = new byte[width * height];
             for (int row = 0; row < height; row++) {
                 int rowStart = bufferStart + row * rowStride;
-                for (int column = 0; column < width; column++) luminance[row * width + column] = buffer.get(rowStart + column * pixelStride);
+                if (pixelStride == 1) {
+                    buffer.position(rowStart);
+                    buffer.get(luminance, row * width, width);
+                } else {
+                    for (int column = 0; column < width; column++) luminance[row * width + column] = buffer.get(rowStart + column * pixelStride);
+                }
             }
-            // Camera2 的 YUV 畫面通常維持感光元件的橫向方向，即使 Activity 是直向。
-            // TextureView 預覽會被系統轉向，但 ZXing 收到的 byte[] 不會，因此同時測試
-            // 原始與 90 度畫面。這可避免「畫面看得到條碼、辨識器卻讀不到」的情況。
-            Result result = tryDecodeFrame(luminance, width, height, oneDimensionalReader, true);
-            if (result == null) {
-                RotatedFrame rotated = rotateClockwise(luminance, width, height);
-                result = tryDecodeFrame(rotated.data, rotated.width, rotated.height, oneDimensionalReader, true);
-            }
-
-            // 先找商品的一維條碼，避免同一畫面旁邊的網址 QR Code 搶先回傳。
-            if (result == null) result = tryDecodeFrame(luminance, width, height, matrixReader, false);
-            if (result == null) {
-                RotatedFrame rotated = rotateClockwise(luminance, width, height);
-                result = tryDecodeFrame(rotated.data, rotated.width, rotated.height, matrixReader, false);
-            }
-            if (result != null && !isUnrelatedWebQr(result) && !finished) finishWithResult(result);
-        } finally {
-            image.close();
-            oneDimensionalReader.reset();
-            matrixReader.reset();
+        } catch (RuntimeException copyError) {
             decoding.set(false);
+            return;
+        } finally {
+            // Release the camera buffer BEFORE decoding so preview never waits for ZXing.
+            image.close();
         }
-    }
-
-    private Result tryDecodeFrame(byte[] luminance, int width, int height, MultiFormatReader reader, boolean oneDimensional) {
-        PlanarYUVLuminanceSource full = new PlanarYUVLuminanceSource(luminance, width, height, 0, 0, width, height, false);
-
-        // 不同手機的相機預覽縮放比例不同，依序測試窄框、寬框及完整畫面。
-        int tightLeft = width / 10;
-        int tightTop = height / 4;
-        Result result = tryDecode(full.crop(tightLeft, tightTop, width - tightLeft * 2, height - tightTop * 2), reader);
-        if (result != null) return result;
-
-        int wideLeft = width / 32;
-        int wideTop = height / 7;
-        result = tryDecode(full.crop(wideLeft, wideTop, width - wideLeft * 2, height - wideTop * 2), reader);
-        if (result != null) return result;
-
-        // 一維碼額外測完整畫面，涵蓋預覽與感光元件裁切不同步的裝置。
-        return oneDimensional ? tryDecode(full, reader) : null;
-    }
-
-    private RotatedFrame rotateClockwise(byte[] source, int width, int height) {
-        byte[] rotated = new byte[source.length];
-        int rotatedWidth = height;
-        int rotatedHeight = width;
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int rotatedX = height - 1 - y;
-                int rotatedY = x;
-                rotated[rotatedY * rotatedWidth + rotatedX] = source[y * width + x];
-            }
+        final byte[] frameData = luminance;
+        ExecutorService executor = decodeExecutor;
+        if (!active || executor == null) { decoding.set(false); return; }
+        try {
+            executor.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        if (!active || frameGeneration != generation) return;
+                        final Result result = frameDecoder.decode(frameData, width, height);
+                        if (result != null && !isUnrelatedWebQr(result)) {
+                            runOnUiThread(new Runnable() {
+                                @Override public void run() {
+                                    if (active && frameGeneration == generation && !finished) finishWithResult(result);
+                                }
+                            });
+                        }
+                    } finally {
+                        if (frameGeneration == generation) decoding.set(false);
+                    }
+                }
+            });
+        } catch (RejectedExecutionException stopped) {
+            if (frameGeneration == generation) decoding.set(false);
         }
-        return new RotatedFrame(rotated, rotatedWidth, rotatedHeight);
-    }
-
-    private static final class RotatedFrame {
-        final byte[] data;
-        final int width;
-        final int height;
-        RotatedFrame(byte[] data, int width, int height) {
-            this.data = data;
-            this.width = width;
-            this.height = height;
-        }
-    }
-
-    private Result tryDecode(LuminanceSource source, MultiFormatReader reader) {
-        Result result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(source)), reader);
-        if (result != null) return result;
-        result = decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(source)), reader);
-        if (result != null) return result;
-        LuminanceSource inverted = source.invert();
-        result = decodeBitmap(new BinaryBitmap(new HybridBinarizer(inverted)), reader);
-        if (result != null) return result;
-        return decodeBitmap(new BinaryBitmap(new GlobalHistogramBinarizer(inverted)), reader);
-    }
-
-    private Result decodeBitmap(BinaryBitmap bitmap, MultiFormatReader reader) {
-        try { return reader.decodeWithState(bitmap); }
-        catch (Exception ignored) { reader.reset(); return null; }
     }
 
     private boolean isUnrelatedWebQr(Result result) {
@@ -369,12 +313,13 @@ public class ScannerActivity extends Activity {
         });
     }
 
-    private void cancelScan() { setResult(RESULT_CANCELED); finish(); }
+    private void cancelScan() { finished = true; setResult(RESULT_CANCELED); finish(); }
     @Override public void onBackPressed() { cancelScan(); }
     private void closeCamera() {
         if (session != null) { session.close(); session = null; }
         if (camera != null) { camera.close(); camera = null; }
         if (imageReader != null) { imageReader.close(); imageReader = null; }
+        if (previewSurface != null) { previewSurface.release(); previewSurface = null; }
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
