@@ -13,6 +13,7 @@ public final class BarcodeDecoder {
     private final MultiFormatReader linearFallback = new MultiFormatReader();
     private final MultiFormatReader matrix = new MultiFormatReader();
     private int frame;
+    private int retryStep = -1;
     private byte[] rotated;
 
     public BarcodeDecoder() {
@@ -36,7 +37,9 @@ public final class BarcodeDecoder {
     }
 
     public Result decode(byte[] data, int width, int height) {
-        int step = frame++ % 24;
+        boolean confirming = retryStep >= 0;
+        int step = confirming ? retryStep : frame++ % 24;
+        retryStep = -1;
         // Alternate sensor directions. ZXing handles the reverse row direction itself.
         if ((step & 1) != 0) {
             if (rotated == null || rotated.length != data.length) rotated = new byte[data.length];
@@ -58,6 +61,9 @@ public final class BarcodeDecoder {
         Result result = read(source, linear, step % 4 < 2);
         // Deep row search only on full-frame slots. Keep it off the usual preview path.
         if (result == null) result = read(source, region == 2 ? linearFallback : matrix, true);
+        // Reuse a successful orientation/crop on the next frame, so confirmation
+        // doesn't have to wait for a complete 24-step fallback cycle.
+        if (result != null && !confirming) retryStep = step;
         return result;
     }
 

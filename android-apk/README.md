@@ -4,6 +4,8 @@
 
 第一次使用相機掃描時會要求 Android 相機權限。APK 支援 Android 6.0 以上，並沿用既有簽章，可直接覆蓋更新。
 
+8.0 版在同一次掃描內要求兩個不同影格讀到相同的內容與格式，才關閉相機並查詢商品。首次成功的辨識方向與裁切會在下一個影格再驗證一次，避免等待整個備援循環。不同結果或超過 1.8 秒會重新確認；這可減少單一影格誤讀，不會修改或猜測商品條碼。執行 `tests/BarcodeDecoderTest.java` 可驗證實際辨識加上確認流程，`tests/ScanResultGateTest.java` 驗證誤讀、逾時與格式切換。
+
 APK 套件名稱：`tw.com.isunfar.orderapp`
 
 Windows 可執行 `build-apk.ps1`，macOS/Linux 可執行 `build-apk.sh`。兩者使用本機 Android SDK 的 `aapt2`、`d8`、`zipalign` 與 `apksigner` 直接建置，不需要 Android Studio 專案或第三方 APK 服務。簽章金鑰保存在 `signing/`，該目錄不會提交到 Git；後續更新 APK 必須沿用相同金鑰。

@@ -53,6 +53,7 @@ public class ScannerActivity extends Activity {
     private final AtomicBoolean decoding = new AtomicBoolean(false);
     private ExecutorService decodeExecutor;
     private BarcodeDecoder decoder;
+    private ScanResultGate resultGate;
     private byte[] luminance;
     private long lastFrameAt;
     private volatile boolean active;
@@ -109,6 +110,7 @@ public class ScannerActivity extends Activity {
         active = true;
         generation++;
         decoder = new BarcodeDecoder();
+        resultGate = new ScanResultGate();
         luminance = null;
         lastFrameAt = 0;
         decoding.set(false);
@@ -232,6 +234,7 @@ public class ScannerActivity extends Activity {
         final int width = image.getWidth();
         final int height = image.getHeight();
         final BarcodeDecoder frameDecoder = decoder;
+        final ScanResultGate frameGate = resultGate;
         try {
             Image.Plane plane = image.getPlanes()[0];
             ByteBuffer buffer = plane.getBuffer();
@@ -264,7 +267,8 @@ public class ScannerActivity extends Activity {
                     try {
                         if (!active || frameGeneration != generation) return;
                         final Result result = frameDecoder.decode(frameData, width, height);
-                        if (result != null && !isUnrelatedWebQr(result)) {
+                        if (result != null && !isUnrelatedWebQr(result)
+                                && frameGate.accept(result, SystemClock.elapsedRealtime())) {
                             runOnUiThread(new Runnable() {
                                 @Override public void run() {
                                     if (active && frameGeneration == generation && !finished) finishWithResult(result);

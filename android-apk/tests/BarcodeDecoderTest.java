@@ -1,4 +1,5 @@
 import tw.com.isunfar.orderapp.BarcodeDecoder;
+import tw.com.isunfar.orderapp.ScanResultGate;
 import com.google.zxing.*;
 import com.google.zxing.common.BitMatrix;
 import java.awt.image.BufferedImage;
@@ -10,9 +11,10 @@ public class BarcodeDecoderTest {
     static int passed;
     static void verify(byte[] data, int width, int height, String expected) {
         BarcodeDecoder decoder = new BarcodeDecoder();
-        for (int i = 0; i < 24; i++) {
+        ScanResultGate gate = new ScanResultGate();
+        for (int i = 0; i < 48; i++) {
             Result result = decoder.decode(data, width, height);
-            if (result != null) {
+            if (result != null && gate.accept(result, i * 120L)) {
                 if (!expected.equals(result.getText())) throw new AssertionError("Expected " + expected + ", got " + result.getText());
                 passed++;
                 return;
